@@ -1,0 +1,52 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:        # 仓库 Actions 页面手动触发
+  push:
+    branches: [ main ]
+
+# 说明：本工作流编译出【未签名】的 .ipa，
+# 供手机端自签工具（全能签 / 轻松签等）配合购买的 P12 证书现场签名安装。
+# 全程不需要任何开发者证书，GitHub Secrets 无需配置。
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. 不签名编译出 NaviApp.app（Release-iphoneos）
+      - name: Build (unsigned)
+        run: |
+          xcodebuild \
+            -project NaviApp/NaviApp.xcodeproj \
+            -scheme NaviApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      # 2. 按 IPA 标准结构打包：Payload/NaviApp.app -> NaviApp-unsigned.ipa
+      - name: Pack as IPA
+        run: |
+          APP_PATH="build/Build/Products/Release-iphoneos/NaviApp.app"
+          echo "== 检查编译产物 =="
+          ls -la "$APP_PATH"
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          cd build/ipa
+          zip -r NaviApp-unsigned.ipa Payload
+          echo "== 打包完成 =="
+          ls -la NaviApp-unsigned.ipa
+
+      # 3. 上传为构建产物，下载后用全能签等工具签名安装
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NaviApp-unsigned-ipa
+          path: build/ipa/NaviApp-unsigned.ipa
+          if-no-files-found: error
