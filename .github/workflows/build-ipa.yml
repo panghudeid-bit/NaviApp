@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-13
 
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
       - name: Build (unsigned)
         run: |
           xcodebuild \
-            -project NaviApp/NaviApp.xcodeproj \
+            -project NaviApp.xcodeproj \
             -scheme NaviApp \
             -configuration Release \
             -sdk iphoneos \
