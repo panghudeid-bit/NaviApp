@@ -219,7 +219,7 @@ struct ContentView: View {
             // 视角控制：导航中保持车头朝向跟随；未导航时若开启跟随则居中显示
             if navigationEngine.isNavigating {
                 withAnimation(.linear(duration: 0.3)) {
-                    cameraPosition = .userLocation(followsHeading: true, fallback: .camera)
+                    cameraPosition = .userLocation(followsHeading: true, fallback: .automatic)
                 }
             } else if followUser && displayRoutes.isEmpty {
                 moveCamera(to: newLocation.coordinate)
@@ -505,7 +505,7 @@ struct ContentView: View {
 
                     // 镜头切换为车头跟随视角
                     withAnimation {
-                        cameraPosition = .userLocation(followsHeading: true, fallback: .camera)
+                        cameraPosition = .userLocation(followsHeading: true, fallback: .automatic)
                     }
                 } label: {
                     Label("开始导航", systemImage: "location.north.fill")
