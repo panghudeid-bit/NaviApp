@@ -25,10 +25,14 @@ final class NavigationEngine: ObservableObject {
     @Published var currentLanes: [LaneInfo] = []
     private var lastAnnouncedLaneIndex: Int = -1
 
+    // 🌟 隧道与弱信号守护状态
+    @Published var isWeakGPSSignal = false
+    private var consecutiveOffRouteCount = 0 // 连续偏航确认计数器（防突发单点漂移）
+    private var lastValidGPSTimestamp: TimeInterval = 0
+
     private var destination: MKMapItem?
     private var currentPreference: RoutePreference = .leastCongested
 
-    // 偏航重算防抖任务，支持瞬间取消并立即触发
     private var isRerouting = false
     private var rerouteTask: Task<Void, Never>?
     private var lastRerouteTimestamp: TimeInterval = 0
@@ -40,7 +44,6 @@ final class NavigationEngine: ObservableObject {
     var onLaneAdvise: ((String) -> Void)?
     var onRerouted: ((MKRoute) -> Void)?
 
-    /// 开始导航（绑定用户选择偏好）
     func start(
         route: MKRoute,
         destination: MKMapItem,
@@ -53,12 +56,15 @@ final class NavigationEngine: ObservableObject {
         self.isNavigating = true
         self.hasArrived = false
         self.isOffRoute = false
+        self.isWeakGPSSignal = false
+        self.consecutiveOffRouteCount = 0
 
         self.remainingDistance = route.distance
         self.remainingTime = route.expectedTravelTime
 
         self.currentStepIndex = 0
         self.lastAnnouncedLaneIndex = -1
+        self.lastValidGPSTimestamp = Date().timeIntervalSince1970
 
         if let firstValidStep = route.steps.first(where: { !$0.instructions.isEmpty }) {
             self.nextStepInstruction = firstValidStep.instructions
@@ -73,17 +79,17 @@ final class NavigationEngine: ObservableObject {
         self.statusMessage = "3D 车道级导航中"
     }
 
-    /// 停止导航
     func stop() {
         self.isNavigating = false
         self.isOffRoute = false
         self.hasArrived = false
+        self.isWeakGPSSignal = false
         self.currentLanes = []
         self.rerouteTask?.cancel()
         self.statusMessage = "导航已结束"
     }
 
-    /// 核心位置更新驱动（增加敏锐偏航检测与偏好重算传递）
+    /// 核心位置更新驱动（增加隧道与弱信号过滤守卫）
     func updateLocation(
         _ location: CLLocation,
         preference: RoutePreference = .leastCongested
@@ -97,7 +103,31 @@ final class NavigationEngine: ObservableObject {
             return
         }
 
-        // 1. 到达判断（距离终点 35 米以内）
+        // ==========================================
+        // 🛡️ 核心守卫：隧道与 GPS 弱信号检测
+        // ==========================================
+        // 1. 水平精度判断（horizontalAccuracy < 0 为无效定位；大于 35 米说明信号严重遮挡或漂移）
+        let accuracy = location.horizontalAccuracy
+        let isAccuracyPoor = (accuracy < 0 || accuracy > 35.0)
+
+        // 2. 时间戳陈旧性判断（超过 6 秒未收到新卫星信号，判定为断点或长隧道）
+        let now = Date().timeIntervalSince1970
+        let isDataStale = abs(location.timestamp.timeIntervalSinceNow) > 6.0
+
+        if isAccuracyPoor || isDataStale {
+            self.isWeakGPSSignal = true
+            self.statusMessage = "🛰️ 进入隧道/信号弱，保持规划"
+            self.consecutiveOffRouteCount = 0 // 弱信号期间清空偏航计数
+
+            // 弱信号或隧道内：严禁触发重新规划！沿路线继续推算进度
+            updateRemainingProgress(location, route: route)
+            return
+        } else {
+            self.isWeakGPSSignal = false
+            self.lastValidGPSTimestamp = now
+        }
+
+        // 3. 到达判断（距离终点 35 米以内）
         let destinationLocation = CLLocation(
             latitude: destination.placemark.coordinate.latitude,
             longitude: destination.placemark.coordinate.longitude
@@ -116,26 +146,29 @@ final class NavigationEngine: ObservableObject {
             return
         }
 
-        // 2. 偏航检测（阈值设为 45 米，兼顾灵敏度与抗 GPS 漂移）
+        // 4. 高精度下的偏航检测（结合双重连续确认防抖）
         let distanceToRoute = distanceFromRoute(location.coordinate, route.polyline)
 
         if distanceToRoute > 45 {
-            if !isOffRoute {
-                onOffRoute?()
-            }
-            isOffRoute = true
-            statusMessage = "正在立马重新规划最优路线..."
+            consecutiveOffRouteCount += 1
 
-            // 核心改进：即刻取消旧任务，立即启动最优偏好算路（仅防 1.5 秒极速重叠）
-            triggerImmediateReroute(from: location, to: destination, preference: currentPreference)
+            // 必须连续 2 次以上在高精度下确认偏离，才判定为真实偏航（彻底消灭单点跳变误判）
+            if consecutiveOffRouteCount >= 2 {
+                if !isOffRoute {
+                    onOffRoute?()
+                }
+                isOffRoute = true
+                statusMessage = "正在重新规划最优路线..."
+                triggerImmediateReroute(from: location, to: destination, preference: currentPreference)
+            }
         } else {
+            consecutiveOffRouteCount = 0
             isOffRoute = false
             statusMessage = "3D 导航中"
             updateRemainingProgress(location, route: route)
         }
     }
 
-    /// 计算点到折线段的垂直距离
     private func distanceFromRoute(
         _ coordinate: CLLocationCoordinate2D,
         _ polyline: MKPolyline
@@ -171,14 +204,13 @@ final class NavigationEngine: ObservableObject {
         return minimumDistance
     }
 
-    /// 立刻重规划最优路线（毫秒级响应）
     private func triggerImmediateReroute(
         from location: CLLocation,
         to destination: MKMapItem,
         preference: RoutePreference
     ) {
         let now = Date().timeIntervalSince1970
-        guard now - lastRerouteTimestamp > 1.5 else { return } // 1.5秒防抖
+        guard now - lastRerouteTimestamp > 1.5 else { return }
         lastRerouteTimestamp = now
 
         rerouteTask?.cancel()
@@ -187,13 +219,12 @@ final class NavigationEngine: ObservableObject {
             request.source = MKMapItem(placemark: MKPlacemark(coordinate: location.coordinate))
             request.destination = destination
             request.transportType = .automobile
-            request.requestsAlternateRoutes = true // 请求备选以配合偏好选出最优
+            request.requestsAlternateRoutes = true
 
             do {
                 let response = try await MKDirections(request: request).calculate()
                 guard !Task.isCancelled, !response.routes.isEmpty else { return }
 
-                // 用偏好引擎评分选出当前偏好下的最优路线
                 let assessments = RoutePreferenceEngine.evaluateRoutes(
                     response.routes,
                     preference: preference
@@ -205,6 +236,7 @@ final class NavigationEngine: ObservableObject {
                 self.remainingDistance = bestRoute.distance
                 self.remainingTime = bestRoute.expectedTravelTime
                 self.isOffRoute = false
+                self.consecutiveOffRouteCount = 0
                 self.statusMessage = "已重新规划 \(preference.rawValue) 路线"
 
                 self.currentStepIndex = 0
@@ -215,7 +247,6 @@ final class NavigationEngine: ObservableObject {
                     self.onStepAdvance?(self.nextStepInstruction)
                 }
 
-                // 立即通知 UI 更新路线渲染
                 self.onRerouted?(bestRoute)
             } catch {
                 if !Task.isCancelled {
@@ -225,7 +256,6 @@ final class NavigationEngine: ObservableObject {
         }
     }
 
-    /// 更新进度与车道级引导
     private func updateRemainingProgress(_ location: CLLocation, route: MKRoute) {
         let polyline = route.polyline
         guard polyline.pointCount >= 2 else { return }

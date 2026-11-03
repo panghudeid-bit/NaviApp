@@ -1,7 +1,5 @@
 import SwiftUI
 
-// MARK: - 车道朝向定义
-
 enum LaneDirection: String, CaseIterable {
     case straight = "直行"
     case left = "左转"
@@ -28,24 +26,20 @@ enum LaneDirection: String, CaseIterable {
     }
 }
 
-// MARK: - 单车道状态模型
-
 struct LaneInfo: Identifiable, Equatable {
     let id = UUID()
     let direction: LaneDirection
     let isRecommended: Bool
 }
 
-// MARK: - 车道级 3D HUD 悬浮指示栏
-
 struct LaneGuidanceView: View {
     let lanes: [LaneInfo]
     let nextTurnInstruction: String
     let distanceToNextStep: Double
+    let isWeakGPS: Bool
 
     var body: some View {
         VStack(spacing: 8) {
-            // 顶部：下一路口转向与剩余米数
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10)
@@ -79,36 +73,41 @@ struct LaneGuidanceView: View {
                         Text("·")
                             .foregroundStyle(.white.opacity(0.4))
 
-                        Text("建议按推荐车道行驶")
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.7))
+                        if isWeakGPS {
+                            Text("隧道/弱信号·保持路线")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .foregroundStyle(.yellow)
+                        } else {
+                            Text("建议按推荐车道行驶")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
                     }
                 }
 
                 Spacer()
 
-                // 3D 车道级徽标
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(hex: "00F2FE"))
+                        .fill(isWeakGPS ? Color.yellow : Color(hex: "00F2FE"))
                         .frame(width: 6, height: 6)
-                    Text("3D车道级")
+                    Text(isWeakGPS ? "弱网守护" : "3D车道级")
                         .font(.system(size: 10, weight: .heavy))
-                        .foregroundStyle(Color(hex: "00F2FE"))
+                        .foregroundStyle(isWeakGPS ? Color.yellow : Color(hex: "00F2FE"))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Color.black.opacity(0.5))
                 .clipShape(Capsule())
                 .overlay(
-                    Capsule().stroke(Color(hex: "00F2FE").opacity(0.4), lineWidth: 1)
+                    Capsule().stroke((isWeakGPS ? Color.yellow : Color(hex: "00F2FE")).opacity(0.4), lineWidth: 1)
                 )
             }
 
             Divider()
                 .background(Color.white.opacity(0.15))
 
-            // 底部：车道级 3D 箭头矩阵
             HStack(spacing: 8) {
                 ForEach(lanes) { lane in
                     VStack(spacing: 4) {
@@ -120,7 +119,6 @@ struct LaneGuidanceView: View {
                                 radius: lane.isRecommended ? 6 : 0
                             )
 
-                        // 推荐车道高亮发光地标
                         Capsule()
                             .fill(
                                 lane.isRecommended

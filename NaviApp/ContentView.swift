@@ -94,7 +94,6 @@ struct ContentView: View {
 
     @State private var cameraPosition: MapCameraPosition = .automatic
 
-    // 路线偏好配置
     @State private var selectedPreference: RoutePreference = .leastCongested
     @State private var routeAssessments: [RouteAssessment] = []
 
@@ -132,29 +131,25 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .top) {
 
-            // 1. 底层 3D 沉浸式地形与建筑物网格
+            // 1. 3D 地图主体
             Map(position: $cameraPosition) {
 
-                // 自定义立体车模
                 if let loc = locationManager.location {
                     Annotation("当前位置", coordinate: loc.coordinate) {
                         car3DMarker(location: loc)
                     }
                 }
 
-                // 多层复合 3D 立体发光车道
                 ForEach(Array(displayRoutes.enumerated()), id: \.offset) { index, route in
                     let isCurrent = (index == selectedRouteIndex)
 
                     if isCurrent {
-                        // 3D 沥青暗色投影底槽
                         MapPolyline(route.polyline)
                             .stroke(
                                 Color.black.opacity(0.5),
                                 style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
                             )
 
-                        // 科技主干光带
                         MapPolyline(route.polyline)
                             .stroke(
                                 LinearGradient(
@@ -165,14 +160,12 @@ struct ContentView: View {
                                 style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
                             )
 
-                        // 顶层高亮发光流光引导
                         MapPolyline(route.polyline)
                             .stroke(
                                 Color(hex: "00F2FE"),
                                 style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
                             )
                     } else {
-                        // 备选路线（半透明暗色）
                         MapPolyline(route.polyline)
                             .stroke(
                                 Color.gray.opacity(0.4),
@@ -197,29 +190,26 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
 
-            // 2. 上层 UI 控制器
+            // 2. 上层浮动视图
             VStack(spacing: 12) {
                 if navigationEngine.isNavigating {
-                    // 导航中：顶部 3D 车道级指示栏
                     LaneGuidanceView(
                         lanes: navigationEngine.currentLanes,
                         nextTurnInstruction: navigationEngine.nextStepInstruction,
-                        distanceToNextStep: navigationEngine.distanceToNextTurn
+                        distanceToNextStep: navigationEngine.distanceToNextTurn,
+                        isWeakGPS: navigationEngine.isWeakGPSSignal
                     )
                     .transition(.move(edge: .top).combined(with: .opacity))
                 } else {
-                    // 未导航：现代搜索栏与偏好筛选胶囊
                     searchAndPreferencePanel
                 }
 
                 Spacer()
 
                 if navigationEngine.isNavigating {
-                    // 导航中：现代化仪表卡片
                     navigationDashboardView
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if !displayRoutes.isEmpty {
-                    // 路线规划完成：多路线对比横滑卡片
                     routeComparisonPanel
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -255,7 +245,6 @@ struct ContentView: View {
                 voiceNavigation.speak(laneText)
             }
 
-            // 偏航重算回调：秒级同步刷新路线与视图
             navigationEngine.onRerouted = { newRoute in
                 displayRoutes = [newRoute]
                 selectedRouteIndex = 0
@@ -273,9 +262,9 @@ struct ContentView: View {
                 startCoordinate = newLocation.coordinate
             }
 
-            // 传递当前位置以及用户所选偏好，保证偏航重算遵循偏好
             navigationEngine.updateLocation(newLocation, preference: selectedPreference)
 
+            // 弱信号或隧道内时保持平滑跟随，不发生剧烈镜头抖动
             if navigationEngine.isNavigating {
                 update3DNavigationCamera(with: newLocation)
             } else if followUser && displayRoutes.isEmpty {
@@ -293,22 +282,21 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 3D 拟真车模与雷达脉冲光标
+    // MARK: - 3D 车模光标
 
     private func car3DMarker(location: CLLocation) -> some View {
         let headingDegrees = (location.course >= 0 ? location.course : (locationManager.heading?.trueHeading ?? 0))
+        let isWeak = navigationEngine.isWeakGPSSignal
 
         return ZStack {
-            // 脉冲雷达波
             Circle()
-                .stroke(Color(hex: "00F2FE").opacity(radarPulse ? 0.0 : 0.7), lineWidth: 2)
+                .stroke((isWeak ? Color.yellow : Color(hex: "00F2FE")).opacity(radarPulse ? 0.0 : 0.7), lineWidth: 2)
                 .frame(width: radarPulse ? 72 : 32, height: radarPulse ? 72 : 32)
 
-            // 光晕底座
             Circle()
                 .fill(
                     RadialGradient(
-                        colors: [Color(hex: "0072FF").opacity(0.55), Color.clear],
+                        colors: [(isWeak ? Color.yellow : Color(hex: "0072FF")).opacity(0.55), Color.clear],
                         center: .center,
                         startRadius: 4,
                         endRadius: 26
@@ -316,9 +304,7 @@ struct ContentView: View {
                 )
                 .frame(width: 52, height: 52)
 
-            // 3D 拟真车模
             ZStack {
-                // 车灯高亮照地流光
                 ConeLightShape()
                     .fill(
                         LinearGradient(
@@ -330,7 +316,6 @@ struct ContentView: View {
                     .frame(width: 36, height: 46)
                     .offset(y: -23)
 
-                // 质感金属车体
                 RoundedRectangle(cornerRadius: 6)
                     .fill(
                         LinearGradient(
@@ -342,11 +327,10 @@ struct ContentView: View {
                     .frame(width: 18, height: 32)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(hex: "0052D4"), lineWidth: 1.5)
+                            .stroke(isWeak ? Color.yellow : Color(hex: "0052D4"), lineWidth: 1.5)
                     )
                     .shadow(color: Color.black.opacity(0.4), radius: 5, x: 0, y: 3)
 
-                // 车窗与天窗
                 VStack(spacing: 2) {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color(hex: "00C6FF"))
@@ -397,12 +381,11 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 搜索栏与路线偏好胶囊组
+    // MARK: - 搜索栏与偏好胶囊组
 
     private var searchAndPreferencePanel: some View {
         VStack(spacing: 12) {
             VStack(spacing: 10) {
-                // 起点
                 HStack(spacing: 10) {
                     Circle().fill(Color(hex: "00F2FE")).frame(width: 8, height: 8)
                     TextField("起点（默认我的位置）", text: $startText)
@@ -410,7 +393,6 @@ struct ContentView: View {
                         .foregroundStyle(.white)
                 }
 
-                // 终点 + 搜索按钮
                 HStack(spacing: 10) {
                     Circle().fill(Color(hex: "FF416C")).frame(width: 8, height: 8)
                     TextField("输入目的地", text: $destinationText)
@@ -448,7 +430,6 @@ struct ContentView: View {
             Divider()
                 .background(Color.white.opacity(0.12))
 
-            // 路线偏好筛选胶囊组
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("路线偏好")
@@ -545,11 +526,10 @@ struct ContentView: View {
         .shadow(color: Color.black.opacity(0.5), radius: 16, x: 0, y: 8)
     }
 
-    // MARK: - 路线规划结果对比卡片组（美化）
+    // MARK: - 路线对比卡片
 
     private var routeComparisonPanel: some View {
         VStack(spacing: 12) {
-            // 横向路线卡片滑动组
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(Array(routeAssessments.enumerated()), id: \.offset) { index, item in
@@ -578,7 +558,6 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundStyle(.white.opacity(0.6))
 
-                            // 路线优势标签
                             HStack(spacing: 5) {
                                 ForEach(item.tags, id: \.self) { tag in
                                     Text(tag)
@@ -621,7 +600,6 @@ struct ContentView: View {
                 .padding(.horizontal, 2)
             }
 
-            // 底部操作按钮栏
             HStack(spacing: 10) {
                 Button {
                     showRouteDetails = true
@@ -645,7 +623,6 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
 
-                // 开始导航主按钮
                 Button {
                     guard let route = selectedRoute, let destination = selectedDestination else { return }
 
@@ -684,12 +661,11 @@ struct ContentView: View {
         .shadow(color: Color.black.opacity(0.6), radius: 18, x: 0, y: 8)
     }
 
-    // MARK: - 导航中仪表盘（沉浸式科技仪表）
+    // MARK: - 导航中仪表盘（含弱网/隧道守护状态展示）
 
     private var navigationDashboardView: some View {
         VStack(spacing: 12) {
             HStack(alignment: .center) {
-                // 剩余里程与时间
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .lastTextBaseline, spacing: 6) {
                         Text(navigationEngine.remainingTime.formattedDuration)
@@ -703,10 +679,22 @@ struct ContentView: View {
                     }
 
                     HStack(spacing: 6) {
-                        Circle().fill(Color.green).frame(width: 6, height: 6)
-                        Text(selectedPreference.rawValue)
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.7))
+                        // 卫星信号状态指示灯
+                        if navigationEngine.isWeakGPSSignal {
+                            Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                                .font(.caption2)
+                                .foregroundStyle(.yellow)
+                            Text("隧道/弱信号守护中")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .foregroundStyle(.yellow)
+                        } else {
+                            Circle().fill(Color.green).frame(width: 6, height: 6)
+                            Text(selectedPreference.rawValue)
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+
                         Text("·")
                             .foregroundStyle(.white.opacity(0.4))
                         Text(navigationEngine.statusMessage)
@@ -717,7 +705,6 @@ struct ContentView: View {
 
                 Spacer()
 
-                // 静音开关
                 Button {
                     if voiceNavigation.isMuted {
                         voiceNavigation.unmute()
@@ -733,7 +720,6 @@ struct ContentView: View {
                         .clipShape(Circle())
                 }
 
-                // 退出导航按钮
                 Button {
                     navigationEngine.stop()
                     withAnimation {
@@ -756,7 +742,7 @@ struct ContentView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 22)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                .stroke(navigationEngine.isWeakGPSSignal ? Color.yellow.opacity(0.4) : Color.white.opacity(0.12), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.6), radius: 16, x: 0, y: 8)
     }
@@ -929,7 +915,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 选择目的地并立即规划
+    // MARK: - 选择目的地
 
     @MainActor
     private func selectDestination(_ item: MKMapItem) async {
@@ -941,7 +927,7 @@ struct ContentView: View {
         await calculateRoute()
     }
 
-    // MARK: - 多备选路线偏好计算
+    // MARK: - 偏好路线计算
 
     @MainActor
     private func calculateRoute() async {
@@ -958,7 +944,7 @@ struct ContentView: View {
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
         request.transportType = .automobile
-        request.requestsAlternateRoutes = true // 请求所有备选路线以便偏好筛选
+        request.requestsAlternateRoutes = true
 
         do {
             let response = try await MKDirections(request: request).calculate()
@@ -969,7 +955,6 @@ struct ContentView: View {
                 return
             }
 
-            // 使用偏好评估引擎分析排序
             let assessments = RoutePreferenceEngine.evaluateRoutes(
                 response.routes,
                 preference: selectedPreference
@@ -1041,7 +1026,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - 颜色 Hex 便捷扩展
+// MARK: - 扩展与辅助
 
 extension Color {
     init(hex: String) {
@@ -1057,8 +1042,6 @@ extension Color {
     }
 }
 
-// MARK: - 车灯锥形渐变形状
-
 struct ConeLightShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
@@ -1069,8 +1052,6 @@ struct ConeLightShape: Shape {
         return path
     }
 }
-
-// MARK: - 时间格式化
 
 extension TimeInterval {
     var formattedDuration: String {
