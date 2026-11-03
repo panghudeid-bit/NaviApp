@@ -14,13 +14,18 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published var isFullAccuracyAuthorized = true // 🌟 精准定位授权状态指示
 
+    /// 上一次采纳定位结果的时间，用于低精度兜底判断
+    private var lastAcceptedTime: Date = .distantPast
+
     override init() {
         super.init()
 
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 5.0
-        manager.pausesLocationUpdatesAutomatically = true
+        // 与 Apple 地图对齐：使用最高精度，而不是百米级精度
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = 1.0
+        // 关闭「静止自动暂停」，否则位置会停留在旧点，看起来像定不准
+        manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = false
     }
@@ -59,9 +64,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func exitNavigationMode() {
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 10.0
-        manager.pausesLocationUpdatesAutomatically = true
+        // 退出导航后仍保持较高精度，否则地图上的蓝点会明显偏掉
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = 2.0
+        manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = false
     }
@@ -93,7 +99,18 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     ) {
         guard let latest = locations.last else { return }
         guard latest.horizontalAccuracy >= 0 else { return }
-        location = latest
+
+        // 精度过滤：Apple 地图在城区通常能拿到 10 米内的点。
+        // 这里优先采纳 50 米内的点，避免基站/弱信号定位让图标来回跳；
+        // 只有在长时间（>10 秒）没有拿到合格点或首次定位时，才退回粗糙点兜底。
+        let isPrecise = latest.horizontalAccuracy <= 50
+        let isStale = Date().timeIntervalSince(lastAcceptedTime) > 10
+        let isFirstFix = (location == nil)
+
+        if isPrecise || isStale || isFirstFix {
+            location = latest
+            lastAcceptedTime = Date()
+        }
     }
 
     func locationManager(
@@ -138,6 +155,10 @@ struct ContentView: View {
 
     @State private var startText = ""
     @State private var viaText = ""
+
+    /// 历史目的地（最多 8 条，持久化到 UserDefaults）
+    @State private var destinationHistory: [String] =
+        UserDefaults.standard.stringArray(forKey: "naviapp.destinationHistory") ?? []
 
     @State private var startCoordinate: CLLocationCoordinate2D?
     @State private var viaCoordinate: CLLocationCoordinate2D?
@@ -483,6 +504,23 @@ struct ContentView: View {
                     TextField("起点（默认我的位置）", text: $startText)
                         .textFieldStyle(.plain)
                         .foregroundStyle(.white)
+
+                    Button {
+                        useCurrentLocationAsStart()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "location.fill")
+                                .font(.system(size: 9, weight: .bold))
+                            Text("当前位置")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(hex: "00F2FE").opacity(0.16))
+                        .foregroundStyle(Color(hex: "00F2FE"))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 HStack(spacing: 10) {
@@ -523,6 +561,10 @@ struct ContentView: View {
                         .clipShape(Capsule())
                     }
                     .disabled(destinationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if !destinationHistory.isEmpty {
+                    destinationHistoryRow
                 }
             }
 
@@ -623,6 +665,86 @@ struct ContentView: View {
                 )
         )
         .shadow(color: Color.black.opacity(0.5), radius: 16, x: 0, y: 8)
+    }
+
+    // MARK: - 历史目的地与当前位置快捷入口
+
+    /// 历史目的地横向条：点一下即可回填并重新搜索
+    private var destinationHistoryRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.45))
+
+                ForEach(destinationHistory, id: \.self) { item in
+                    destinationHistoryChip(item)
+                }
+
+                Button {
+                    clearDestinationHistory()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.3))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func destinationHistoryChip(_ item: String) -> some View {
+        Button {
+            destinationText = item
+            Task { await searchPlaces() }
+        } label: {
+            Text(item)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.1))
+                .foregroundStyle(.white.opacity(0.85))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func clearDestinationHistory() {
+        destinationHistory = []
+        UserDefaults.standard.removeObject(forKey: "naviapp.destinationHistory")
+    }
+
+    /// 把起点重置为「我的位置」，并按需重新规划路线
+    private func useCurrentLocationAsStart() {
+        startText = ""
+        startMapItem = nil
+        startCoordinate = locationManager.location?.coordinate
+        startName = "我的位置"
+        followUser = true
+
+        if let loc = locationManager.location {
+            moveCamera(to: loc.coordinate)
+        }
+
+        if destinationMapItem != nil || endCoordinate != nil {
+            Task { await calculateRoute() }
+        }
+    }
+
+    /// 记录一次成功使用的目的地（去重、最多 8 条）
+    private func recordDestination(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "我的位置" else { return }
+
+        var list = destinationHistory.filter { $0 != trimmed }
+        list.insert(trimmed, at: 0)
+        if list.count > 8 {
+            list = Array(list.prefix(8))
+        }
+
+        destinationHistory = list
+        UserDefaults.standard.set(list, forKey: "naviapp.destinationHistory")
     }
 
     // MARK: - 路线对比卡片
@@ -1142,6 +1264,9 @@ struct ContentView: View {
             followUser = false
 
             fitRoute()
+
+            // 成功算出路线后，把目的地记入历史（供下次快速选择）
+            recordDestination(endName.isEmpty ? destinationText : endName)
         } catch {
             errorMessage = error.localizedDescription
             showError = true
