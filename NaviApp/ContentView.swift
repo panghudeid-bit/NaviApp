@@ -77,171 +77,52 @@ struct ContentView: View {
 
     var body: some View {
 
-        ZStack(alignment: .top) {
+        ZStack {
 
-            // 地图
+            // 地图保持全屏
             Map(position: $cameraPosition) {
 
                 UserAnnotation()
 
                 if let route = route {
-                    MapPolyline(
-                        route.polyline
-                    )
-                    .stroke(
-                        .blue,
-                        lineWidth: 6
-                    )
+                    MapPolyline(route.polyline)
+                        .stroke(.blue, lineWidth: 6)
                 }
 
                 if let destination = destination {
                     Marker(
                         destination.name ?? "目的地",
-                        coordinate:
-                            destination.placemark.coordinate
+                        coordinate: destination.placemark.coordinate
                     )
                 }
             }
             .mapControls {
-                MapUserLocationButton()
                 MapCompass()
                 MapScaleView()
             }
             .ignoresSafeArea()
 
-            // 顶部搜索框
-            VStack(spacing: 12) {
+            // 控件根据屏幕安全区域布局
+            VStack(spacing: 0) {
 
-                HStack {
+                searchPanel
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
 
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
 
-                    TextField(
-                        "搜索目的地",
-                        text: $destinationText
-                    )
-                    .submitLabel(.search)
-                    .onSubmit {
-                        Task {
-                            await searchDestination()
-                        }
-                    }
-
-                    if !destinationText.isEmpty {
-                        Button {
-                            destinationText = ""
-                            destination = nil
-                            route = nil
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Button {
-                        Task {
-                            await searchDestination()
-                        }
-                    } label: {
-                        Text("搜索")
-                            .fontWeight(.semibold)
-                    }
-                    .disabled(
-                        destinationText
-                            .trimmingCharacters(
-                                in: .whitespaces
-                            )
-                            .isEmpty
-                    )
-                }
-                .padding()
-                .background(.regularMaterial)
-                .clipShape(
-                    RoundedRectangle(cornerRadius: 16)
-                )
-                .shadow(radius: 4)
-
-                Spacer()
-
-                // 底部路线信息
                 if let route = route {
-
-                    VStack(spacing: 12) {
-
-                        HStack {
-
-                            VStack(alignment: .leading) {
-
-                                Text(
-                                    route.expectedTravelTime
-                                    .formattedDuration()
-                                )
-                                .font(.title)
-                                .fontWeight(.bold)
-
-                                Text(
-                                    String(
-                                        format: "距离 %.1f 公里",
-                                        route.distance / 1000
-                                    )
-                                )
-                                .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Image(
-                                systemName: "car.fill"
-                            )
-                            .font(.largeTitle)
-                            .foregroundStyle(.blue)
-                        }
-
-                        Button {
-                            withAnimation {
-                                cameraPosition =
-                                    .rect(
-                                        route.polyline
-                                            .boundingMapRect
-                                    )
-                            }
-                        } label: {
-
-                            Text("查看完整路线")
-                                .fontWeight(.semibold)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(.blue)
-                                .foregroundStyle(.white)
-                                .clipShape(
-                                    RoundedRectangle(
-                                        cornerRadius: 12
-                                    )
-                                )
-                        }
-                    }
-                    .padding()
-                    .background(.regularMaterial)
-                    .clipShape(
-                        RoundedRectangle(cornerRadius: 20)
-                    )
-                    .shadow(radius: 5)
-                    .padding()
+                    routePanel(route)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
                 }
             }
-            .padding(.horizontal)
-            .padding(.top, 60)
         }
         .onAppear {
             locationManager.requestPermission()
         }
-        .onChange(
-            of: locationManager.location
-        ) {
-            if let location =
-                locationManager.location {
-
+        .onChange(of: locationManager.location) {
+            if let location = locationManager.location {
                 cameraPosition = .region(
                     MKCoordinateRegion(
                         center: location.coordinate,
@@ -251,14 +132,101 @@ struct ContentView: View {
                 )
             }
         }
-        .alert(
-            "提示",
-            isPresented: $showError
-        ) {
+        .alert("提示", isPresented: $showError) {
             Button("确定", role: .cancel) {}
         } message: {
             Text(errorMessage)
         }
+    }
+
+    // MARK: - 搜索面板
+
+    private var searchPanel: some View {
+
+        HStack(spacing: 10) {
+
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("搜索目的地", text: $destinationText)
+                .submitLabel(.search)
+                .onSubmit {
+                    Task { await searchDestination() }
+                }
+
+            if !destinationText.isEmpty {
+                Button {
+                    destinationText = ""
+                    destination = nil
+                    route = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Button {
+                Task { await searchDestination() }
+            } label: {
+                Text("搜索")
+                    .fontWeight(.semibold)
+            }
+            .disabled(
+                destinationText.trimmingCharacters(in: .whitespaces).isEmpty
+            )
+        }
+        .padding(12)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(radius: 4, y: 2)
+    }
+
+    // MARK: - 路线信息卡片
+
+    private func routePanel(_ route: MKRoute) -> some View {
+
+        VStack(spacing: 12) {
+
+            HStack {
+
+                VStack(alignment: .leading, spacing: 4) {
+
+                    Text(route.expectedTravelTime.formattedDuration())
+                        .font(.title2)
+                        .fontWeight(.bold)
+
+                    Text(String(format: "距离 %.1f 公里", route.distance / 1000))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "car.fill")
+                    .font(.title)
+                    .foregroundStyle(.blue)
+            }
+
+            Button {
+                withAnimation {
+                    cameraPosition = .rect(
+                        route.polyline.boundingMapRect
+                    )
+                }
+            } label: {
+                Text("查看完整路线")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(16)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .shadow(radius: 6, y: 2)
     }
 
     // MARK: - 搜索目的地
@@ -267,9 +235,7 @@ struct ContentView: View {
     private func searchDestination() async {
 
         let query = destinationText
-            .trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !query.isEmpty else { return }
 
@@ -280,12 +246,9 @@ struct ContentView: View {
         }
 
         let request = MKLocalSearch.Request()
-
         request.naturalLanguageQuery = query
 
-        if let location =
-            locationManager.location {
-
+        if let location = locationManager.location {
             request.region = MKCoordinateRegion(
                 center: location.coordinate,
                 latitudinalMeters: 30000,
@@ -294,32 +257,20 @@ struct ContentView: View {
         }
 
         do {
-
-            let search = MKLocalSearch(
-                request: request
-            )
-
+            let search = MKLocalSearch(request: request)
             let response = try await search.start()
 
-            guard let result =
-                response.mapItems.first else {
-
+            guard let result = response.mapItems.first else {
                 errorMessage = "没有找到该目的地"
                 showError = true
                 return
             }
 
             destination = result
-
-            await calculateRoute(
-                to: result
-            )
+            await calculateRoute(to: result)
 
         } catch {
-
-            errorMessage =
-                "搜索失败：\(error.localizedDescription)"
-
+            errorMessage = "搜索失败：\(error.localizedDescription)"
             showError = true
         }
     }
@@ -327,13 +278,9 @@ struct ContentView: View {
     // MARK: - 路线规划
 
     @MainActor
-    private func calculateRoute(
-        to destination: MKMapItem
-    ) async {
+    private func calculateRoute(to destination: MKMapItem) async {
 
-        guard let currentLocation =
-            locationManager.location else {
-
+        guard let currentLocation = locationManager.location else {
             errorMessage = "尚未获取到当前位置"
             showError = true
             return
@@ -342,28 +289,16 @@ struct ContentView: View {
         let request = MKDirections.Request()
 
         request.source = MKMapItem(
-            placemark: MKPlacemark(
-                coordinate:
-                    currentLocation.coordinate
-            )
+            placemark: MKPlacemark(coordinate: currentLocation.coordinate)
         )
-
         request.destination = destination
-
         request.transportType = .automobile
 
         do {
+            let directions = MKDirections(request: request)
+            let response = try await directions.calculate()
 
-            let directions = MKDirections(
-                request: request
-            )
-
-            let response =
-                try await directions.calculate()
-
-            guard let bestRoute =
-                response.routes.first else {
-
+            guard let bestRoute = response.routes.first else {
                 errorMessage = "无法规划路线"
                 showError = true
                 return
@@ -372,18 +307,13 @@ struct ContentView: View {
             route = bestRoute
 
             withAnimation {
-
                 cameraPosition = .rect(
-                    bestRoute.polyline
-                        .boundingMapRect
+                    bestRoute.polyline.boundingMapRect
                 )
             }
 
         } catch {
-
-            errorMessage =
-                "路线规划失败：\(error.localizedDescription)"
-
+            errorMessage = "路线规划失败：\(error.localizedDescription)"
             showError = true
         }
     }
@@ -396,17 +326,12 @@ extension TimeInterval {
     func formattedDuration() -> String {
 
         let minutes = Int(self / 60)
-
         let hours = minutes / 60
-
         let remainingMinutes = minutes % 60
 
         if hours > 0 {
-
             return "\(hours)小时\(remainingMinutes)分钟"
-
         } else {
-
             return "\(remainingMinutes)分钟"
         }
     }
