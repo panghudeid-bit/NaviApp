@@ -17,6 +17,10 @@ struct HomePanelView: View {
     var onDeleteRecent: (SavedPlace) -> Void
     var onClearRecents: () -> Void
 
+    /// 搜索框焦点。用于在搜索/选点/语音输入时主动收起键盘，
+    /// 否则键盘会一直盖住面板下半部分。
+    @FocusState private var isSearchFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
             grabber
@@ -36,6 +40,14 @@ struct HomePanelView: View {
             }
         }
         .background(panelBackground)
+    }
+
+    // MARK: - 交互
+
+    /// 选中地点前先收起键盘，避免面板被键盘压住看不到路线结果
+    private func handleSelectPlace(_ place: SavedPlace) {
+        isSearchFocused = false
+        onSelectPlace(place)
     }
 
     // MARK: - 顶部拖动条
@@ -59,7 +71,9 @@ struct HomePanelView: View {
                 .textFieldStyle(.plain)
                 .foregroundStyle(.white)
                 .submitLabel(.search)
+                .focused($isSearchFocused)
                 .onSubmit {
+                    isSearchFocused = false
                     onSearch()
                 }
 
@@ -85,6 +99,7 @@ struct HomePanelView: View {
 
     private var voiceButton: some View {
         Button {
+            isSearchFocused = false
             onVoiceTap()
         } label: {
             Image(systemName: isRecording ? "waveform" : "mic.fill")
@@ -138,7 +153,7 @@ struct HomePanelView: View {
 
     private func favoriteChip(_ place: SavedPlace) -> some View {
         Button {
-            onSelectPlace(place)
+                handleSelectPlace(place)
         } label: {
             VStack(spacing: 8) {
                 ZStack {
@@ -244,7 +259,7 @@ struct HomePanelView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            onSelectPlace(place)
+                handleSelectPlace(place)
         }
     }
 

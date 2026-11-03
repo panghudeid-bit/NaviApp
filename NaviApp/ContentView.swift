@@ -1,6 +1,8 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import UIKit
+import Combine
 
 // MARK: - 定位管理器（精度状态监听与按需控制）
 
@@ -14,16 +16,19 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published var isFullAccuracyAuthorized = true // 🌟 精准定位授权状态指示
 
-    /// 上一次采纳定位结果的时间，用于低精度兜底判断
-    private var lastAcceptedTime: Date = .distantPast
-
     override init() {
         super.init()
 
         manager.delegate = self
-        // 与 Apple 地图对齐：使用最高精度，而不是百米级精度
+        // 与 Apple 地图对齐：使用最高精度
         manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 1.0
+        // 关键：不要设距离过滤。Apple 地图用的是 kCLDistanceFilterNone，
+        // 设成 1.0/5.0 会让系统丢掉小幅位移，蓝点表现为「一顿一顿地跳」，
+        // 看着就是定位不准。让系统把每个有效点都推上来。
+        manager.distanceFilter = kCLDistanceFilterNone
+        // 浏览态不要用 automotiveNavigation，那套策略假设你在高速行车，
+        // 会做较强的平滑抑制，步行时位置会明显滞后。
+        manager.activityType = .other
         // 关闭「静止自动暂停」，否则位置会停留在旧点，看起来像定不准
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = false
@@ -36,8 +41,25 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         if status == .notDetermined {
             manager.requestWhenInUseAuthorization()
-        } else if status == .authorizedWhenInUse || status == .authorizedAlways {
+            return
+        }
+
+        if status == .authorizedWhenInUse || status == .authorizedAlways {
             startUpdating()
+            // 已经授权但只给了「大致位置」时，必须主动申请一次精确定位。
+            // 大致位置下 iOS 会故意把坐标偏移 1~3 公里，这是「定位偏差很大」最常见的原因。
+            ensureFullAccuracy()
+        }
+    }
+
+    /// 若当前是「大致位置」授权，申请一次临时精确定位
+    func ensureFullAccuracy() {
+        if #available(iOS 14.0, *) {
+            let accuracy = manager.accuracyAuthorization
+            isFullAccuracyAuthorized = (accuracy == .fullAccuracy)
+
+            guard accuracy == .reducedAccuracy else { return }
+            manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: "NavPrecisionAccuracy")
         }
     }
 
@@ -51,7 +73,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func enterNavigationMode() {
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.activityType = .automotiveNavigation
-        manager.distanceFilter = 1.0
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.pausesLocationUpdatesAutomatically = false
 
         if let backgroundModes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String],
@@ -66,7 +88,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func exitNavigationMode() {
         // 退出导航后仍保持较高精度，否则地图上的蓝点会明显偏掉
         manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 2.0
+        // 必须把活动类型改回来，否则退出导航后仍按「车行」策略平滑，
+        // 步行/室内时位置会滞后一段时间，看起来像定不准
+        manager.activityType = .other
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = false
@@ -90,6 +115,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         if authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways {
             startUpdating()
+            ensureFullAccuracy()
         }
     }
 
@@ -97,20 +123,29 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         _ manager: CLLocationManager,
         didUpdateLocations locations: [CLLocation]
     ) {
-        guard let latest = locations.last else { return }
-        guard latest.horizontalAccuracy >= 0 else { return }
+        // 1）只丢弃真正无效的点：horizontalAccuracy < 0 表示定位失败；
+        //    差于 1km 的点属于基站/WiFi 粗定位，画上去比不画更混乱。
+        //    注意：不再按「是否优于 50 米」来筛选 —— 上一版这么做会让
+        //    蓝点在移动过程中一直停在旧位置，表现为定位滞后、追不上真实位置。
+        let usable = locations.filter { $0.horizontalAccuracy > 0 && $0.horizontalAccuracy < 1000 }
+        guard let candidate = usable.last else { return }
 
-        // 精度过滤：Apple 地图在城区通常能拿到 10 米内的点。
-        // 这里优先采纳 50 米内的点，避免基站/弱信号定位让图标来回跳；
-        // 只有在长时间（>10 秒）没有拿到合格点或首次定位时，才退回粗糙点兜底。
-        let isPrecise = latest.horizontalAccuracy <= 50
-        let isStale = Date().timeIntervalSince(lastAcceptedTime) > 10
-        let isFirstFix = (location == nil)
+        // 2）丢弃陈旧的缓存点。iOS 在刚开始更新时常常先抛一个几分钟前的缓存位置，
+        //    而且它的 horizontalAccuracy 可能看着很漂亮。直接采纳会让蓝点先在
+        //    错误的地方闪一下 —— 用户感受到的就是「刚打开时位置完全不对」。
+        let age = -candidate.timestamp.timeIntervalSinceNow
+        guard age < 5 else { return }
 
-        if isPrecise || isStale || isFirstFix {
-            location = latest
-            lastAcceptedTime = Date()
+        // 3）轻量抖动抑制：只有「几乎没动、精度反而明显变差」时才沿用旧点，
+        //    其余情况一律采纳最新点，保证位置实时跟手。
+        if let previous = location {
+            let moved = candidate.distance(from: previous)
+            if moved < 1.5 && candidate.horizontalAccuracy > previous.horizontalAccuracy + 15 {
+                return
+            }
         }
+
+        location = candidate
     }
 
     func locationManager(
@@ -145,6 +180,10 @@ struct ContentView: View {
 
     @State private var mapStyleMode: MapDisplayMode = .standard
     @State private var parkingCoordinate: CLLocationCoordinate2D?
+
+    /// 键盘高度。首页面板是贴底固定高度的，不加这个偏移的话
+    /// 键盘一弹出就会直接盖住搜索输入框，打字时看不见自己在输什么。
+    @State private var keyboardHeight: CGFloat = 0
     /// 从收藏/最近列表选中地点时记住的地址，用于回写「最近搜索」
     @State private var lastSelectedAddress: String = ""
 
@@ -179,6 +218,11 @@ struct ContentView: View {
     @State private var showError = false
     @State private var followUser = true
 
+    /// 上一次因跟随而移动相机时的中心点与时间。
+    /// 用于限制相机跟随频率，避免每次定位回调都强拉地图导致抖动。
+    @State private var lastFollowCenter: CLLocationCoordinate2D?
+    @State private var lastFollowAt: Date = .distantPast
+
     @State private var radarPulse = false
 
     private var selectedRoute: NavRoute? {
@@ -190,15 +234,18 @@ struct ContentView: View {
         ZStack {
             Map(position: $cameraPosition) {
 
-                // 当前位置：导航中显示车标，浏览时显示蓝点
-                if let loc = navigationEngine.filteredNavLocation ?? locationManager.location {
+                // 当前位置
+                // 浏览态：直接用 MapKit 原生用户位置图层 UserAnnotation()。
+                // 它和「自带地图」用的是同一份位置数据、同一套坐标系处理、同一套渲染，
+                // 不存在任何自绘导致的偏差，也自带系统精度圈。
+                // 只有进入导航态才换成自绘的 3D 车标（需要跟随航向旋转）。
+                if navigationEngine.isNavigating,
+                   let loc = navigationEngine.filteredNavLocation ?? locationManager.location {
                     Annotation("当前位置", coordinate: loc.coordinate) {
-                        if navigationEngine.isNavigating {
-                            car3DMarker(location: loc)
-                        } else {
-                            CurrentLocationDot()
-                        }
+                        car3DMarker(location: loc)
                     }
+                } else {
+                    UserAnnotation()
                 }
 
                 // 停车位置（手动记录）
@@ -287,6 +334,17 @@ struct ContentView: View {
         .onChange(of: speechRecognizer.transcript) { _, text in
             guard !text.isEmpty else { return }
             destinationText = text
+        }
+        // 用 willChangeFrame 而不是 willShow：中文输入法的候选栏会让键盘高度变化，
+        // 切换输入法时只会触发 changeFrame，只监听 willShow 会导致面板被候选栏压住。
+        // 键盘隐藏时该通知也会触发，此时 frame.origin.y 在屏幕外，算出高度为 0。
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screenHeight = UIScreen.main.bounds.height
+            let covered = max(0, screenHeight - frame.origin.y)
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = covered
+            }
         }
         .alert("提示", isPresented: $showError) {
             Button("确定", role: .cancel) {}
@@ -423,6 +481,8 @@ struct ContentView: View {
             .frame(height: 328)
         }
         .ignoresSafeArea(edges: .bottom)
+        // 键盘弹出时整体上抬，让搜索框始终位于键盘上方
+        .offset(y: -keyboardHeight)
     }
 
     // MARK: - 悬浮按钮
@@ -467,6 +527,10 @@ struct ContentView: View {
         }
 
         followUser = true
+        // 手动归位时同步跟随基准，避免下一次定位回调立刻又判定需要跟随
+        lastFollowCenter = coordinate
+        lastFollowAt = Date()
+
         withAnimation(.easeInOut(duration: 0.6)) {
             cameraPosition = .camera(
                 MapCamera(centerCoordinate: coordinate, distance: 1200, heading: 0, pitch: 0)
@@ -545,7 +609,9 @@ struct ContentView: View {
                 update3DNavigationCamera(with: safeLoc)
             }
         } else if followUser && displayRoutes.isEmpty {
-            moveCamera(to: newLocation.coordinate)
+            // 不要每次定位回调都重设相机：distanceFilter 取消了以后回调很频繁，
+            // 频繁重设相机会让地图一直轻微抖动，用户根本没法判断蓝点准不准。
+            followUserIfMoved(to: newLocation.coordinate)
         }
 
         let coordinate = newLocation.coordinate
@@ -1525,6 +1591,29 @@ struct ContentView: View {
                 )
             )
         }
+    }
+
+    /// 相机跟随策略：首次定位立刻居中，之后只在「走出一屏」时才重新跟随。
+    /// 早期版本每次定位回调都调用 moveCamera，定位点每秒更新多次，
+    /// 地图就一直被强行拉回中心并抖动，视觉上会误判成「定位不准」。
+    private func followUserIfMoved(to coordinate: CLLocationCoordinate2D) {
+        let now = Date()
+
+        guard let last = lastFollowCenter else {
+            moveCamera(to: coordinate)
+            lastFollowCenter = coordinate
+            lastFollowAt = now
+            return
+        }
+
+        let moved = CLLocation(latitude: last.latitude, longitude: last.longitude)
+            .distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
+
+        guard moved > 400, now.timeIntervalSince(lastFollowAt) > 4 else { return }
+
+        moveCamera(to: coordinate)
+        lastFollowCenter = coordinate
+        lastFollowAt = now
     }
 
     private func fitRoute() {
