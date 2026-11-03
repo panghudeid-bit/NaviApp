@@ -13,6 +13,7 @@
 		A10000000000000000000013 /* RoutePlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000009 /* RoutePlanner.swift */; };
 		A10000000000000000000014 /* NavigationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* NavigationEngine.swift */; };
 		A10000000000000000000016 /* VoiceNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* VoiceNavigation.swift */; };
+		A10000000000000000000018 /* LaneGuidanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LaneGuidanceView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +25,7 @@
 		A10000000000000000000009 /* RoutePlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutePlanner.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* NavigationEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationEngine.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* VoiceNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceNavigation.swift; sourceTree = "<group>"; };
+		A10000000000000000000019 /* LaneGuidanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaneGuidanceView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -53,6 +55,7 @@
 				A10000000000000000000009 /* RoutePlanner.swift */,
 				A10000000000000000000015 /* NavigationEngine.swift */,
 				A10000000000000000000017 /* VoiceNavigation.swift */,
+				A10000000000000000000019 /* LaneGuidanceView.swift */,
 				A10000000000000000000008 /* Assets.xcassets */,
 				A10000000000000000000007 /* Info.plist */,
 			);
@@ -133,6 +136,7 @@
 				A10000000000000000000013 /* RoutePlanner.swift in Sources */,
 				A10000000000000000000014 /* NavigationEngine.swift in Sources */,
 				A10000000000000000000016 /* VoiceNavigation.swift in Sources */,
+				A10000000000000000000018 /* LaneGuidanceView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

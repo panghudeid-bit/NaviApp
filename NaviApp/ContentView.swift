@@ -17,14 +17,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         super.init()
 
         manager.delegate = self
-        // 针对车载导航优化定位配置
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.activityType = .automotiveNavigation
-        manager.distanceFilter = 3.0 // 每移动 3 米更新一次，平衡灵敏度与电量消耗
-        manager.pausesLocationUpdatesAutomatically = false // 导航中不自动暂停定位
+        manager.distanceFilter = 2.0 // 2 米更新一次，提供极为细腻的 3D 航向平滑
+        manager.pausesLocationUpdatesAutomatically = false
     }
 
-    /// 请求定位权限并在已有权限时立即启动定位
     func requestPermission() {
         let status = manager.authorizationStatus
         authorizationStatus = status
@@ -36,34 +34,28 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 
-    /// 开启定位与方向监测
     func startUpdating() {
         manager.startUpdatingLocation()
         manager.startUpdatingHeading()
     }
 
-    /// 停止定位更新
     func stopUpdating() {
         manager.stopUpdatingLocation()
         manager.stopUpdatingHeading()
     }
 
-    // iOS 14+ 推荐的授权变更回调
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
-
         if authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways {
             startUpdating()
         }
     }
 
-    // 兼容 iOS 14 之前的旧版本方法
     func locationManager(
         _ manager: CLLocationManager,
         didChangeAuthorization status: CLAuthorizationStatus
     ) {
         authorizationStatus = status
-
         if status == .authorizedWhenInUse || status == .authorizedAlways {
             startUpdating()
         }
@@ -100,7 +92,7 @@ struct ContentView: View {
     @StateObject private var navigationEngine = NavigationEngine()
     @StateObject private var voiceNavigation = VoiceNavigation()
 
-    // 地图镜头位置（iOS 17+）
+    // iOS 17+ 3D 沉浸式相机
     @State private var cameraPosition: MapCameraPosition = .automatic
 
     @State private var destinationText = ""
@@ -127,6 +119,9 @@ struct ContentView: View {
     @State private var showError = false
     @State private var followUser = true
 
+    // 拟真 3D 脉冲动画开关
+    @State private var radarPulse = false
+
     private var selectedRoute: MKRoute? {
         guard selectedRouteIndex < displayRoutes.count else { return nil }
         return displayRoutes[selectedRouteIndex]
@@ -135,18 +130,59 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .top) {
 
-            // 地图主体
+            // 1. 3D 真实地形与建筑地图
             Map(position: $cameraPosition) {
-                UserAnnotation()
 
-                ForEach(Array(displayRoutes.enumerated()), id: \.offset) { index, route in
-                    MapPolyline(route.polyline)
-                        .stroke(
-                            index == selectedRouteIndex ? Color.blue : Color.gray.opacity(0.65),
-                            lineWidth: index == selectedRouteIndex ? 7 : 4
-                        )
+                // 自定义 3D 车道级拟真车模与雷达脉冲光标（替代默认蓝点）
+                if let loc = locationManager.location {
+                    Annotation("当前位置", coordinate: loc.coordinate) {
+                        car3DMarker(location: loc)
+                    }
                 }
 
+                // 2. 立体车道级多层渲染（3D 管道阴影底座 + 渐变车道路面 + 核心发光引导带）
+                ForEach(Array(displayRoutes.enumerated()), id: \.offset) { index, route in
+                    let isCurrent = (index == selectedRouteIndex)
+
+                    if isCurrent {
+                        // 底层：3D 立体路面沥青投影层
+                        MapPolyline(route.polyline)
+                            .stroke(
+                                Color.black.opacity(0.35),
+                                style: StrokeStyle(lineWidth: 16, lineCap: .round, lineJoin: .round)
+                            )
+
+                        // 中层：真实车道级深蓝高附着路面
+                        MapPolyline(route.polyline)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.05, green: 0.35, blue: 0.95),
+                                        Color(red: 0.00, green: 0.65, blue: 1.00)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ),
+                                style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
+                            )
+
+                        // 顶层：车道核心高光发光流光带
+                        MapPolyline(route.polyline)
+                            .stroke(
+                                Color.cyan.opacity(0.9),
+                                style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
+                            )
+                    } else {
+                        // 备选路线
+                        MapPolyline(route.polyline)
+                            .stroke(
+                                Color.gray.opacity(0.5),
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                            )
+                    }
+                }
+
+                // 终点立标
                 if let end = endCoordinate {
                     Marker(
                         endName.isEmpty ? "目的地" : endName,
@@ -154,15 +190,25 @@ struct ContentView: View {
                     )
                 }
             }
+            .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .including([.parking, .gasStation])))
             .mapControls {
                 MapCompass()
                 MapScaleView()
+                MapPitchToggle()
             }
             .ignoresSafeArea()
 
-            // 浮动面板与搜索层
+            // 浮动面板层
             VStack(spacing: 12) {
-                if !navigationEngine.isNavigating {
+                if navigationEngine.isNavigating {
+                    // 导航中：顶部悬浮 3D 车道级指示栏
+                    LaneGuidanceView(
+                        lanes: navigationEngine.currentLanes,
+                        nextTurnInstruction: navigationEngine.nextStepInstruction,
+                        distanceToNextStep: navigationEngine.distanceToNextTurn
+                    )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                } else {
                     searchPanel
                 }
 
@@ -173,10 +219,10 @@ struct ContentView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.top, navigationEngine.isNavigating ? 48 : 58)
+            .padding(.top, navigationEngine.isNavigating ? 50 : 58)
             .padding(.bottom, 12)
 
-            // 搜索结果覆盖层
+            // 搜索结果
             if showResults {
                 resultsOverlay
             }
@@ -184,7 +230,6 @@ struct ContentView: View {
         .onAppear {
             locationManager.requestPermission()
 
-            // 绑定语音与导航事件回调
             navigationEngine.onOffRoute = {
                 voiceNavigation.announceOffRoute()
             }
@@ -200,10 +245,19 @@ struct ContentView: View {
                 voiceNavigation.speak(instruction)
             }
 
-            // 偏航重规划成功后，同步刷新地图上的渲染折线
+            // 车道级变道播报
+            navigationEngine.onLaneAdvise = { laneText in
+                voiceNavigation.speak(laneText)
+            }
+
             navigationEngine.onRerouted = { newRoute in
                 displayRoutes = [newRoute]
                 selectedRouteIndex = 0
+            }
+
+            // 启动雷达光波动画
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                radarPulse = true
             }
         }
         .onChange(of: locationManager.location) { newLocation in
@@ -213,14 +267,11 @@ struct ContentView: View {
                 startCoordinate = newLocation.coordinate
             }
 
-            // 核心驱动：传递最新 GPS 坐标至导航引擎
             navigationEngine.updateLocation(newLocation)
 
-            // 视角控制：导航中保持车头朝向跟随；未导航时若开启跟随则居中显示
+            // 导航视角自适应插值更新：实时 3D 俯仰与视距控制
             if navigationEngine.isNavigating {
-                withAnimation(.linear(duration: 0.3)) {
-                    cameraPosition = .userLocation(followsHeading: true, fallback: .automatic)
-                }
+                update3DNavigationCamera(with: newLocation)
             } else if followUser && displayRoutes.isEmpty {
                 moveCamera(to: newLocation.coordinate)
             }
@@ -236,25 +287,130 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - 3D 拟真车模与雷达脉冲光标
+
+    private func car3DMarker(location: CLLocation) -> some View {
+        let headingDegrees = (location.course >= 0 ? location.course : (locationManager.heading?.trueHeading ?? 0))
+
+        return ZStack {
+            // 扩散雷达波
+            Circle()
+                .stroke(Color.cyan.opacity(radarPulse ? 0.0 : 0.6), lineWidth: 2)
+                .frame(width: radarPulse ? 70 : 30, height: radarPulse ? 70 : 30)
+
+            // 车辆光晕底座
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [Color.blue.opacity(0.5), Color.clear],
+                        center: .center,
+                        startRadius: 5,
+                        endRadius: 24
+                    )
+                )
+                .frame(width: 48, height: 48)
+
+            // 3D 拟真车模外观（立体渐变箭头、车头大灯光束）
+            ZStack {
+                // 车灯远光照射效果
+                ConeLightShape()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.yellow.opacity(0.4), Color.clear],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                    )
+                    .frame(width: 38, height: 44)
+                    .offset(y: -22)
+
+                // 立体小车模底壳
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white, Color(white: 0.88)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .frame(width: 18, height: 32)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.blue, lineWidth: 1.5)
+                    )
+                    .shadow(color: Color.black.opacity(0.35), radius: 4, x: 0, y: 3)
+
+                // 车窗与车顶涂装
+                VStack(spacing: 2) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.cyan.opacity(0.85))
+                        .frame(width: 12, height: 7)
+
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(width: 10, height: 8)
+
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.cyan.opacity(0.85))
+                        .frame(width: 12, height: 4)
+                }
+            }
+            .rotationEffect(.degrees(headingDegrees))
+        }
+    }
+
+    // MARK: - 3D 导航动态视距计算
+
+    private func update3DNavigationCamera(with location: CLLocation) {
+        let currentHeading = (location.course >= 0 ? location.course : (locationManager.heading?.trueHeading ?? 0))
+        let speed = max(0, location.speed) // 单位：米/秒
+
+        // 智能视距控制：低速（路口/转弯）拉近并加大仰角；高速拉远开阔视野
+        let distance: Double
+        let pitch: Double
+
+        if speed < 5.0 {
+            // 时速 < 18km/h（路口待转/起步）：超近景 3D 沉浸式俯仰
+            distance = 150
+            pitch = 65
+        } else if speed < 16.0 {
+            // 时速 18~60km/h（市区道路）
+            distance = 220
+            pitch = 60
+        } else {
+            // 高速行驶
+            distance = 320
+            pitch = 52
+        }
+
+        withAnimation(.easeInOut(duration: 0.5)) {
+            cameraPosition = .camera(
+                MapCamera(
+                    centerCoordinate: location.coordinate,
+                    distance: distance,
+                    heading: currentHeading,
+                    pitch: pitch
+                )
+            )
+        }
+    }
+
     // MARK: 搜索栏
 
     private var searchPanel: some View {
         VStack(spacing: 12) {
-            // 起点
             HStack(spacing: 10) {
                 Circle().fill(.green).frame(width: 8, height: 8)
                 TextField("起点（默认我的位置）", text: $startText)
                     .textFieldStyle(.plain)
             }
 
-            // 途经点
             HStack(spacing: 10) {
                 Circle().fill(.orange).frame(width: 8, height: 8)
                 TextField("途经点（可选）", text: $viaText)
                     .textFieldStyle(.plain)
             }
 
-            // 终点 + 搜索按钮
             HStack(spacing: 10) {
                 Circle().fill(.red).frame(width: 8, height: 8)
                 TextField("输入目的地", text: $destinationText)
@@ -278,7 +434,7 @@ struct ContentView: View {
             if !displayRoutes.isEmpty {
                 Divider()
                 HStack {
-                    Label("路线已规划", systemImage: "checkmark.circle.fill")
+                    Label("3D 路线已规划", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                     Spacer()
                     Button("清除路线") {
@@ -387,7 +543,7 @@ struct ContentView: View {
 
                     Text(
                         navigationEngine.isNavigating
-                            ? String(format: "剩余 %.1f 公里", navigationEngine.remainingDistance / 1000)
+                            ? String(format: "剩余 %.1f 公里 · 3D 车道导航中", navigationEngine.remainingDistance / 1000)
                             : String(format: "全程 %.1f 公里", route.distance / 1000)
                     )
                     .foregroundStyle(.secondary)
@@ -400,39 +556,8 @@ struct ContentView: View {
                     .foregroundStyle(.blue)
             }
 
-            // 导航中实时提示条
-            if navigationEngine.isNavigating {
-                VStack(alignment: .leading, spacing: 8) {
-                    if !navigationEngine.nextStepInstruction.isEmpty {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.turn.up.right.diamond.fill")
-                                .font(.title3)
-                                .foregroundStyle(.blue)
-                            Text(navigationEngine.nextStepInstruction)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-                        }
-                    }
-
-                    if navigationEngine.isOffRoute {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                            Text("已偏离路线，正在重新规划...")
-                                .font(.subheadline)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(Color.blue.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-            }
-
             // 按钮操作区
             if navigationEngine.isNavigating {
-                // 导航中：结束导航按钮与静音开关
                 HStack(spacing: 12) {
                     Button {
                         navigationEngine.stop()
@@ -464,7 +589,6 @@ struct ContentView: View {
                     }
                 }
             } else {
-                // 未开始导航：路线详情、全览路线、交换与开始导航
                 HStack(spacing: 10) {
                     Button {
                         showRouteDetails = true
@@ -501,20 +625,25 @@ struct ContentView: View {
                     guard let route = selectedRoute, let destination = selectedDestination else { return }
 
                     navigationEngine.start(route: route, destination: destination)
-                    voiceNavigation.speak("导航开始，全程约\(route.expectedTravelTime.formattedDuration)，请系好安全带，安全行驶")
+                    voiceNavigation.speak("开始车道级3D导航，全程约\(route.expectedTravelTime.formattedDuration)，请沿当前车道行驶")
 
-                    // 镜头切换为车头跟随视角
-                    withAnimation {
-                        cameraPosition = .userLocation(followsHeading: true, fallback: .automatic)
+                    if let loc = locationManager.location {
+                        update3DNavigationCamera(with: loc)
                     }
                 } label: {
-                    Label("开始导航", systemImage: "location.north.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    HStack {
+                        Image(systemName: "location.north.fill")
+                        Text("进入车道级 3D 导航")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(
+                        LinearGradient(colors: [Color.blue, Color.cyan], startPoint: .leading, endPoint: .trailing)
+                    )
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: Color.blue.opacity(0.35), radius: 8, x: 0, y: 4)
                 }
             }
         }
@@ -715,6 +844,19 @@ struct ContentView: View {
         if let location = locationManager.location {
             moveCamera(to: location.coordinate)
         }
+    }
+}
+
+// MARK: - 车灯锥形渐变形状
+
+struct ConeLightShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
+        return path
     }
 }
 

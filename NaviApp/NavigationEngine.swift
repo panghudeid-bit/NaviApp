@@ -19,15 +19,21 @@ final class NavigationEngine: ObservableObject {
 
     @Published var currentStepIndex: Int = 0
     @Published var nextStepInstruction: String = ""
+    @Published var distanceToNextTurn: Double = 0
+
+    // 车道级 3D 导航状态
+    @Published var currentLanes: [LaneInfo] = []
+    private var lastAnnouncedLaneIndex: Int = -1
 
     private var destination: MKMapItem?
     private var lastRerouteTime = Date.distantPast
     private var isRerouting = false
 
-    // 回调通知
+    // 事件回调
     var onOffRoute: (() -> Void)?
     var onArrival: (() -> Void)?
     var onStepAdvance: ((String) -> Void)?
+    var onLaneAdvise: ((String) -> Void)?
     var onRerouted: ((MKRoute) -> Void)?
 
     /// 开始导航
@@ -43,15 +49,20 @@ final class NavigationEngine: ObservableObject {
         self.remainingTime = route.expectedTravelTime
 
         self.currentStepIndex = 0
+        self.lastAnnouncedLaneIndex = -1
 
-        // 获取第一个有效的指示步骤
+        // 初始化首个步骤与默认车道排布
         if let firstValidStep = route.steps.first(where: { !$0.instructions.isEmpty }) {
             self.nextStepInstruction = firstValidStep.instructions
+            self.distanceToNextTurn = firstValidStep.distance
+            self.currentLanes = synthesizeLanes(for: firstValidStep.instructions)
         } else {
             self.nextStepInstruction = "沿当前道路直行"
+            self.distanceToNextTurn = 500
+            self.currentLanes = synthesizeLanes(for: "直行")
         }
 
-        self.statusMessage = "导航进行中"
+        self.statusMessage = "3D 车道级导航进行中"
     }
 
     /// 停止导航
@@ -59,6 +70,7 @@ final class NavigationEngine: ObservableObject {
         self.isNavigating = false
         self.isOffRoute = false
         self.hasArrived = false
+        self.currentLanes = []
         self.statusMessage = "导航已结束"
     }
 
@@ -72,7 +84,7 @@ final class NavigationEngine: ObservableObject {
             return
         }
 
-        // 1. 到达终点判断（距离目的地 35 米以内视为已到达）
+        // 1. 到达判断（距离终点 35 米以内）
         let destinationLocation = CLLocation(
             latitude: destination.placemark.coordinate.latitude,
             longitude: destination.placemark.coordinate.longitude
@@ -86,34 +98,34 @@ final class NavigationEngine: ObservableObject {
             }
             hasArrived = true
             isNavigating = false
+            currentLanes = []
             statusMessage = "已到达目的地"
             return
         }
 
-        // 2. 偏航检测：计算当前位置到规划折线的垂直距离
+        // 2. 偏航检测
         let distanceToRoute = distanceFromRoute(location.coordinate, route.polyline)
 
-        // 偏航阈值设为 60 米（防止高架、峡谷漂移误触）
         if distanceToRoute > 60 {
             if !isOffRoute {
                 onOffRoute?()
             }
             isOffRoute = true
-            statusMessage = "正在重新规划路线"
+            statusMessage = "正在重新规划 3D 路线..."
 
             Task {
                 await reroute(from: location, to: destination)
             }
         } else {
             isOffRoute = false
-            statusMessage = "导航进行中"
+            statusMessage = "3D 导航中"
 
-            // 3. 沿路线累积计算真实剩余距离、时间和转向步骤提示
+            // 3. 沿路线累积计算真实剩余距离、时间和车道步骤指引
             updateRemainingProgress(location, route: route)
         }
     }
 
-    /// 计算指定点到折线段的最小垂距
+    /// 计算点到折线段的垂直距离
     private func distanceFromRoute(
         _ coordinate: CLLocationCoordinate2D,
         _ polyline: MKPolyline
@@ -151,7 +163,6 @@ final class NavigationEngine: ObservableObject {
 
     /// 偏航重规划
     private func reroute(from location: CLLocation, to destination: MKMapItem) async {
-        // 频率限制节流保护（至少间隔 8 秒）
         guard !isRerouting, Date().timeIntervalSince(lastRerouteTime) > 8 else {
             return
         }
@@ -173,23 +184,23 @@ final class NavigationEngine: ObservableObject {
             self.remainingDistance = newRoute.distance
             self.remainingTime = newRoute.expectedTravelTime
             self.isOffRoute = false
-            self.statusMessage = "已重新规划路线"
+            self.statusMessage = "已重新规划 3D 路线"
 
-            // 更新步骤指示
             self.currentStepIndex = 0
             if let firstStep = newRoute.steps.first(where: { !$0.instructions.isEmpty }) {
                 self.nextStepInstruction = firstStep.instructions
+                self.distanceToNextTurn = firstStep.distance
+                self.currentLanes = synthesizeLanes(for: firstStep.instructions)
                 self.onStepAdvance?(self.nextStepInstruction)
             }
 
-            // 同步通知外层界面刷新绘制
             self.onRerouted?(newRoute)
         } catch {
             self.statusMessage = "重新规划失败，请检查网络"
         }
     }
 
-    /// 更新行驶进度与转向引导
+    /// 更新进度与车道级引导
     private func updateRemainingProgress(_ location: CLLocation, route: MKRoute) {
         let polyline = route.polyline
         guard polyline.pointCount >= 2 else { return }
@@ -201,7 +212,6 @@ final class NavigationEngine: ObservableObject {
         var bestDistance = CLLocationDistance.greatestFiniteMagnitude
         var distanceAlongRoute: CLLocationDistance = 0
 
-        // 沿折线计算用户已行驶距离
         for index in 0..<(polyline.pointCount - 1) {
             let a = points[index]
             let b = points[index + 1]
@@ -229,12 +239,12 @@ final class NavigationEngine: ObservableObject {
             cumulativeDistance += segmentLength
         }
 
-        // 更新剩余总距离与时间
+        // 剩余里程与耗时
         remainingDistance = max(0, route.distance - distanceAlongRoute)
         let remainingRatio = route.distance > 0 ? remainingDistance / route.distance : 0
         remainingTime = route.expectedTravelTime * remainingRatio
 
-        // 步骤跟踪：根据已行驶距离判定当前步骤
+        // 步骤检测与距下一转向点距离
         var stepCumulative: CLLocationDistance = 0
         var detectedStepIndex = 0
 
@@ -242,17 +252,81 @@ final class NavigationEngine: ObservableObject {
             stepCumulative += step.distance
             if distanceAlongRoute < stepCumulative {
                 detectedStepIndex = index
+                distanceToNextTurn = max(0, stepCumulative - distanceAlongRoute)
                 break
             }
         }
 
+        // 当进入新步骤或路口临近时更新车道级 3D 模型
         if detectedStepIndex != currentStepIndex && detectedStepIndex < route.steps.count {
             currentStepIndex = detectedStepIndex
             let instruction = route.steps[detectedStepIndex].instructions
             if !instruction.isEmpty {
                 nextStepInstruction = instruction
+                currentLanes = synthesizeLanes(for: instruction)
                 onStepAdvance?(instruction)
             }
+        }
+
+        // 路口临近变道语音提醒（500 米内变道）
+        if distanceToNextTurn < 500 && distanceToNextTurn > 250 && lastAnnouncedLaneIndex != currentStepIndex {
+            lastAnnouncedLaneIndex = currentStepIndex
+            let laneAdvise = generateLaneSpeechAdvice(for: nextStepInstruction)
+            if !laneAdvise.isEmpty {
+                onLaneAdvise?(laneAdvise)
+            }
+        }
+    }
+
+    /// 根据路线转向语义智能模拟真实 4 车道配置与推荐车道
+    private func synthesizeLanes(for instruction: String) -> [LaneInfo] {
+        let text = instruction.lowercased()
+
+        if text.contains("左转") || text.contains("左拐") {
+            // 左转路况：左1左转（推荐），左2直行+左转（推荐），中间直行，右侧右转
+            return [
+                LaneInfo(direction: .left, isRecommended: true),
+                LaneInfo(direction: .straightLeft, isRecommended: true),
+                LaneInfo(direction: .straight, isRecommended: false),
+                LaneInfo(direction: .right, isRecommended: false)
+            ]
+        } else if text.contains("右转") || text.contains("右拐") || text.contains("匝道") || text.contains("出口") {
+            // 右转路况：左侧直行，右侧右转（推荐）
+            return [
+                LaneInfo(direction: .left, isRecommended: false),
+                LaneInfo(direction: .straight, isRecommended: false),
+                LaneInfo(direction: .straightRight, isRecommended: true),
+                LaneInfo(direction: .right, isRecommended: true)
+            ]
+        } else if text.contains("掉头") {
+            return [
+                LaneInfo(direction: .uTurn, isRecommended: true),
+                LaneInfo(direction: .left, isRecommended: false),
+                LaneInfo(direction: .straight, isRecommended: false),
+                LaneInfo(direction: .right, isRecommended: false)
+            ]
+        } else {
+            // 默认直行：高亮中间 2 个直行车道
+            return [
+                LaneInfo(direction: .left, isRecommended: false),
+                LaneInfo(direction: .straight, isRecommended: true),
+                LaneInfo(direction: .straight, isRecommended: true),
+                LaneInfo(direction: .right, isRecommended: false)
+            ]
+        }
+    }
+
+    /// 生成车道级变道提示语音
+    private func generateLaneSpeechAdvice(for instruction: String) -> String {
+        let text = instruction.lowercased()
+        if text.contains("左转") {
+            return "前方请向左变道，行驶在左侧车道"
+        } else if text.contains("右转") || text.contains("匝道") || text.contains("出口") {
+            return "前方请向右变道，行驶在右侧车道"
+        } else if text.contains("掉头") {
+            return "前方请提前并入最左侧掉头车道"
+        } else {
+            return "请保持在直行车道行驶"
         }
     }
 }
