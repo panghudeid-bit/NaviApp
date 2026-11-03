@@ -154,72 +154,79 @@ struct ContentView: View {
         return displayRoutes[selectedRouteIndex]
     }
 
+    // MARK: - 3D 地图视图（拆分以降低编译器类型检查压力）
+
+    private var mapView: some View {
+        Map(position: $cameraPosition) {
+
+            if let loc = locationManager.location {
+                Annotation("当前位置", coordinate: loc.coordinate) {
+                    car3DMarker(location: loc)
+                }
+            }
+
+            if let via = viaCoordinate {
+                Marker("途经点", coordinate: via)
+                    .tint(.orange)
+            }
+
+            if let end = endCoordinate {
+                Marker(endName.isEmpty ? "目的地" : endName, coordinate: end)
+                    .tint(Color(hex: "FF416C"))
+            }
+
+            ForEach(Array(displayRoutes.enumerated()), id: \.offset) { index, navRoute in
+                routeContent(for: navRoute, isCurrent: (index == selectedRouteIndex))
+            }
+        }
+        .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .including([.parking, .gasStation])))
+        .mapControls {
+            MapCompass()
+            MapScaleView()
+            MapPitchToggle()
+        }
+        .ignoresSafeArea()
+    }
+
+    @MapContentBuilder
+    private func routeContent(for navRoute: NavRoute, isCurrent: Bool) -> some MapContent {
+        ForEach(Array(navRoute.polylines.enumerated()), id: \.offset) { _, poly in
+            if isCurrent {
+                MapPolyline(poly)
+                    .stroke(
+                        Color.black.opacity(0.5),
+                        style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
+                    )
+
+                MapPolyline(poly)
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color(hex: "0052D4"), Color(hex: "4364F7"), Color(hex: "6FB1FC")],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
+                    )
+
+                MapPolyline(poly)
+                    .stroke(
+                        Color(hex: "00F2FE"),
+                        style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
+                    )
+            } else {
+                MapPolyline(poly)
+                    .stroke(
+                        Color.gray.opacity(0.4),
+                        style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
+                    )
+            }
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
 
-            // 1. 3D 地形与路线渲染
-            Map(position: $cameraPosition) {
-
-                if let loc = locationManager.location {
-                    Annotation("当前位置", coordinate: loc.coordinate) {
-                        car3DMarker(location: loc)
-                    }
-                }
-
-                if let via = viaCoordinate {
-                    Marker("途经点", coordinate: via)
-                        .tint(.orange)
-                }
-
-                if let end = endCoordinate {
-                    Marker(endName.isEmpty ? "目的地" : endName, coordinate: end)
-                        .tint(Color(hex: "FF416C"))
-                }
-
-                // 渲染所有候选全程路线的完整折线
-                ForEach(Array(displayRoutes.enumerated()), id: \.offset) { index, navRoute in
-                    let isCurrent = (index == selectedRouteIndex)
-
-                    ForEach(Array(navRoute.polylines.enumerated()), id: \.offset) { _, poly in
-                        if isCurrent {
-                            MapPolyline(poly)
-                                .stroke(
-                                    Color.black.opacity(0.5),
-                                    style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
-                                )
-
-                            MapPolyline(poly)
-                                .stroke(
-                                    LinearGradient(
-                                        colors: [Color(hex: "0052D4"), Color(hex: "4364F7"), Color(hex: "6FB1FC")],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    ),
-                                    style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
-                                )
-
-                            MapPolyline(poly)
-                                .stroke(
-                                    Color(hex: "00F2FE"),
-                                    style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
-                                )
-                        } else {
-                            MapPolyline(poly)
-                                .stroke(
-                                    Color.gray.opacity(0.4),
-                                    style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
-                                )
-                        }
-                    }
-                }
-            }
-            .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .including([.parking, .gasStation])))
-            .mapControls {
-                MapCompass()
-                MapScaleView()
-                MapPitchToggle()
-            }
-            .ignoresSafeArea()
+            mapView
 
             // 2. 交互悬浮层
             VStack(spacing: 12) {
@@ -584,63 +591,10 @@ struct ContentView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(Array(routeAssessments.enumerated()), id: \.offset) { index, item in
-                        let isSelected = (index == selectedRouteIndex)
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(item.navRoute.expectedTravelTime.formattedDuration)
-                                    .font(.system(size: 22, weight: .heavy))
-                                    .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.8))
-
-                                Spacer()
-
-                                if item.isRecommended {
-                                    Text("最优选")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(Color(hex: "00F2FE"))
-                                        .foregroundStyle(Color.black)
-                                        .clipShape(Capsule())
-                                }
-                            }
-
-                            Text("全程 \(item.navRoute.distance.formattedMeters)")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.6))
-
-                            HStack(spacing: 5) {
-                                ForEach(item.tags, id: \.self) { tag in
-                                    Text(tag)
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.white.opacity(0.12))
-                                        .foregroundStyle(Color(hex: "00F2FE"))
-                                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                                }
-                            }
-                        }
-                        .frame(width: 170)
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(
-                                    isSelected
-                                    ? Color(hex: "0052D4").opacity(0.45)
-                                    : Color(hex: "10141E").opacity(0.85)
-                                )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(
-                                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
-                                    lineWidth: isSelected ? 2 : 0.8
-                                )
-                        )
-                        .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 8)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                        RouteCardView(
+                            assessment: item,
+                            isSelected: (index == selectedRouteIndex)
+                        ) {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                 selectedRouteIndex = index
                                 fitRoute()
@@ -1190,6 +1144,84 @@ extension TimeInterval {
             return "\(hours)小时\(remainingMinutes)分钟"
         } else {
             return "\(max(1, remainingMinutes))分钟"
+        }
+    }
+}
+
+// MARK: - 路线对比卡片（拆分以降低编译器类型检查压力）
+
+struct RouteCardView: View {
+    let assessment: RouteAssessment
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            headerRow
+            distanceText
+            tagsRow
+        }
+        .frame(width: 170)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(
+                    isSelected
+                    ? Color(hex: "0052D4").opacity(0.45)
+                    : Color(hex: "10141E").opacity(0.85)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(
+                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
+                    lineWidth: isSelected ? 2 : 0.8
+                )
+        )
+        .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap()
+        }
+    }
+
+    private var headerRow: some View {
+        HStack {
+            Text(assessment.navRoute.expectedTravelTime.formattedDuration)
+                .font(.system(size: 22, weight: .heavy))
+                .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.8))
+
+            Spacer()
+
+            if assessment.isRecommended {
+                Text("最优选")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color(hex: "00F2FE"))
+                    .foregroundStyle(Color.black)
+                    .clipShape(Capsule())
+            }
+        }
+    }
+
+    private var distanceText: some View {
+        Text("全程 \(assessment.navRoute.distance.formattedMeters)")
+            .font(.caption)
+            .foregroundStyle(.white.opacity(0.6))
+    }
+
+    private var tagsRow: some View {
+        HStack(spacing: 5) {
+            ForEach(assessment.tags, id: \.self) { tag in
+                Text(tag)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.white.opacity(0.12))
+                    .foregroundStyle(Color(hex: "00F2FE"))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
         }
     }
 }
