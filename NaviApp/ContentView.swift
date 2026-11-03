@@ -75,7 +75,9 @@ struct ContentView: View {
 
     @State private var selectedDestination: MKMapItem?
 
-    @State private var route: MKRoute?
+    @State private var displayRoutes: [MKRoute] = []
+
+    @State private var selectedRouteIndex: Int = 0
 
     @State private var startCoordinate: CLLocationCoordinate2D?
 
@@ -99,6 +101,13 @@ struct ContentView: View {
 
     @State private var followUser = true
 
+    private var selectedRoute: MKRoute? {
+        guard selectedRouteIndex < displayRoutes.count else {
+            return nil
+        }
+        return displayRoutes[selectedRouteIndex]
+    }
+
     var body: some View {
 
         ZStack(alignment: .top) {
@@ -109,15 +118,20 @@ struct ContentView: View {
 
                 UserAnnotation()
 
-                if let route = route {
+                ForEach(
+                    Array(displayRoutes.enumerated()),
+                    id: \.offset
+                ) { index, route in
+
                     MapPolyline(route.polyline)
                         .stroke(
-                            .blue,
-                            style: StrokeStyle(
-                                lineWidth: 7,
-                                lineCap: .round,
-                                lineJoin: .round
-                            )
+                            index == selectedRouteIndex
+                            ? .blue
+                            : .gray.opacity(0.65),
+                            lineWidth:
+                                index == selectedRouteIndex
+                                ? 7
+                                : 4
                         )
                 }
 
@@ -140,7 +154,7 @@ struct ContentView: View {
 
                 Spacer()
 
-                if let route = route {
+                if let route = selectedRoute {
                     routePanel(route)
                 }
             }
@@ -168,7 +182,7 @@ struct ContentView: View {
                 startCoordinate = newLocation.coordinate
             }
 
-            if followUser && route == nil {
+            if followUser && displayRoutes.isEmpty {
                 moveCamera(
                     to: newLocation.coordinate
                 )
@@ -229,7 +243,7 @@ struct ContentView: View {
                 )
             }
 
-            if route != nil {
+            if !displayRoutes.isEmpty {
 
                 Divider()
 
@@ -501,7 +515,7 @@ struct ContentView: View {
                         value: endName
                     )
 
-                    if let route = route {
+                    if let route = selectedRoute {
 
                         LabeledContent(
                             "行驶距离",
@@ -519,7 +533,7 @@ struct ContentView: View {
                     }
                 }
 
-                if let route = route {
+                if let route = selectedRoute {
 
                     Section("路线提示") {
 
@@ -705,7 +719,8 @@ struct ContentView: View {
                 return
             }
 
-            route = bestRoute
+            displayRoutes = response.routes
+            selectedRouteIndex = 0
 
             followUser = false
 
@@ -764,7 +779,7 @@ struct ContentView: View {
 
     private func fitRoute() {
 
-        guard let route = route else { return }
+        guard let route = selectedRoute else { return }
 
         withAnimation {
 
@@ -776,7 +791,8 @@ struct ContentView: View {
 
     private func clearRoute() {
 
-        route = nil
+        displayRoutes = []
+        selectedRouteIndex = 0
 
         selectedDestination = nil
 
