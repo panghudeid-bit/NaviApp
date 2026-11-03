@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     name: Build NaviApp V2.5 IPA
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 45
 
     steps:

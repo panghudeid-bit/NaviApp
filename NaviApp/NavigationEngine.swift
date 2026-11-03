@@ -253,7 +253,7 @@ final class NavigationEngine: ObservableObject {
             }
 
             let nearestPoint = MKMapPoint(x: a.x + t * dx, y: a.y + t * dy)
-            let distance = MKMetersBetweenMapPoints(userPoint, nearestPoint)
+            let distance = userPoint.distance(to: nearestPoint)
             minimumDistance = min(minimumDistance, distance)
         }
 
@@ -387,7 +387,7 @@ final class NavigationEngine: ObservableObject {
         var runDist: CLLocationDistance = 0
         for i in 0..<totalSegments {
             segmentStartDistances[i] = runDist
-            runDist += MKMetersBetweenMapPoints(points[i], points[i + 1])
+            runDist += points[i].distance(to: points[i + 1])
         }
 
         var bestDistance = CLLocationDistance.greatestFiniteMagnitude
@@ -410,10 +410,10 @@ final class NavigationEngine: ObservableObject {
             }
 
             let nearestPoint = MKMapPoint(x: a.x + t * dx, y: a.y + t * dy)
-            let distToLine = MKMetersBetweenMapPoints(userPoint, nearestPoint)
+            let distToLine = userPoint.distance(to: nearestPoint)
 
             // 原子计算当前候选线段的沿线总米数
-            let thisSegmentLength = MKMetersBetweenMapPoints(a, b)
+            let thisSegmentLength = a.distance(to: b)
             let thisAlongDistance = segmentStartDistances[index] + thisSegmentLength * t
 
             // 🌟 原子绑定：最优垂距时，线段索引与该线段上的投影进度必须来自同一个实体！

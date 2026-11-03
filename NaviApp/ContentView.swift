@@ -632,124 +632,13 @@ struct ContentView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(Array(routeAssessments.enumerated()), id: \.offset) { index, item in
-                        let isSelected = (index == selectedRouteIndex)
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(item.navRoute.expectedTravelTime.formattedDuration)
-                                    .font(.system(size: 22, weight: .heavy))
-                                    .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.8))
-
-                                Spacer()
-
-                                if item.isRecommended {
-                                    Text("最优选")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(Color(hex: "00F2FE"))
-                                        .foregroundStyle(Color.black)
-                                        .clipShape(Capsule())
-                                }
-                            }
-
-                            Text("全程 \(item.navRoute.distance.formattedMeters)")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.6))
-
-                            HStack(spacing: 5) {
-                                ForEach(item.tags, id: \.self) { tag in
-                                    Text(tag)
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.white.opacity(0.12))
-                                        .foregroundStyle(Color(hex: "00F2FE"))
-                                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                                }
-                            }
-                        }
-                        .frame(width: 170)
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(
-                                    isSelected
-                                    ? Color(hex: "0052D4").opacity(0.45)
-                                    : Color(hex: "10141E").opacity(0.85)
-                                )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(
-                                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
-                                    lineWidth: isSelected ? 2 : 0.8
-                                )
-                        )
-                        .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 8)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                selectedRouteIndex = index
-                                fitRoute()
-                            }
-                        }
+                        routeCardView(index: index, item: item)
                     }
                 }
                 .padding(.horizontal, 2)
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    showRouteDetails = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.title3)
-                        .padding()
-                        .background(Color.white.opacity(0.1))
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-
-                Button {
-                    swapEndpoints()
-                } label: {
-                    Image(systemName: "arrow.up.arrow.down")
-                        .font(.title3)
-                        .padding()
-                        .background(Color.white.opacity(0.1))
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-
-                Button {
-                    guard let route = selectedRoute else { return }
-
-                    locationManager.enterNavigationMode()
-                    voiceNavigation.enterNavigationAudioMode()
-
-                    navigationEngine.start(navRoute: route, preference: selectedPreference)
-                    voiceNavigation.speak("开始3D导航，已为您选择\(selectedPreference.rawValue)路线，全程约\(route.expectedTravelTime.formattedDuration)，请注意行驶安全", isUrgent: true)
-
-                    if let loc = navigationEngine.filteredNavLocation ?? locationManager.location {
-                        update3DNavigationCamera(with: loc)
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "location.north.fill")
-                        Text("进入 3D 偏好导航")
-                    }
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(
-                        LinearGradient(colors: [Color(hex: "00C6FF"), Color(hex: "0072FF")], startPoint: .leading, endPoint: .trailing)
-                    )
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .shadow(color: Color(hex: "0072FF").opacity(0.5), radius: 10, x: 0, y: 4)
-                }
-            }
+            routeActionBar
         }
         .padding(14)
         .background(
@@ -761,6 +650,142 @@ struct ContentView: View {
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.6), radius: 18, x: 0, y: 8)
+    }
+
+    /// 单张路线卡片：把三元表达式提前算成常量，避免 SwiftUI 类型推断超时
+    private func routeCardView(index: Int, item: RouteAssessment) -> some View {
+        let isSelected = (index == selectedRouteIndex)
+        let fillColor = isSelected
+            ? Color(hex: "0052D4").opacity(0.45)
+            : Color(hex: "10141E").opacity(0.85)
+        let strokeColor = isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1)
+        let strokeWidth: CGFloat = isSelected ? 2 : 0.8
+        let glowColor = isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear
+        let timeColor = isSelected ? Color.white : Color.white.opacity(0.8)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(item.navRoute.expectedTravelTime.formattedDuration)
+                    .font(.system(size: 22, weight: .heavy))
+                    .foregroundStyle(timeColor)
+
+                Spacer()
+
+                if item.isRecommended {
+                    Text("最优选")
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color(hex: "00F2FE"))
+                        .foregroundStyle(Color.black)
+                        .clipShape(Capsule())
+                }
+            }
+
+            Text("全程 \(item.navRoute.distance.formattedMeters)")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+
+            HStack(spacing: 5) {
+                ForEach(item.tags, id: \.self) { tag in
+                    routeTagChip(tag)
+                }
+            }
+        }
+        .frame(width: 170)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 16).fill(fillColor))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(strokeColor, lineWidth: strokeWidth)
+        )
+        .shadow(color: glowColor, radius: 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                selectedRouteIndex = index
+                fitRoute()
+            }
+        }
+    }
+
+    private func routeTagChip(_ tag: String) -> some View {
+        Text(tag)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.white.opacity(0.12))
+            .foregroundStyle(Color(hex: "00F2FE"))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
+    private var routeActionBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                showRouteDetails = true
+            } label: {
+                Image(systemName: "list.bullet")
+                    .font(.title3)
+                    .padding()
+                    .background(Color.white.opacity(0.1))
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+
+            Button {
+                swapEndpoints()
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.title3)
+                    .padding()
+                    .background(Color.white.opacity(0.1))
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+
+            Button {
+                beginPreferenceNavigation()
+            } label: {
+                routeActionBarLabel
+            }
+        }
+    }
+
+    private var routeActionBarLabel: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "location.north.fill")
+            Text("进入 3D 偏好导航")
+        }
+        .font(.headline)
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(
+            LinearGradient(
+                colors: [Color(hex: "00C6FF"), Color(hex: "0072FF")],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .foregroundStyle(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: Color(hex: "0072FF").opacity(0.5), radius: 10, x: 0, y: 4)
+    }
+
+    private func beginPreferenceNavigation() {
+        guard let route = selectedRoute else { return }
+
+        locationManager.enterNavigationMode()
+        voiceNavigation.enterNavigationAudioMode()
+
+        navigationEngine.start(navRoute: route, preference: selectedPreference)
+        voiceNavigation.speak(
+            "开始3D导航，已为您选择\(selectedPreference.rawValue)路线，全程约\(route.expectedTravelTime.formattedDuration)，请注意行驶安全",
+            isUrgent: true
+        )
+
+        if let loc = navigationEngine.filteredNavLocation ?? locationManager.location {
+            update3DNavigationCamera(with: loc)
+        }
     }
 
     // MARK: - 导航仪表盘
