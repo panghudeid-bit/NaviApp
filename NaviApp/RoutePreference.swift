@@ -1,13 +1,11 @@
 import Foundation
 import MapKit
 
-// MARK: - 路线偏好类型
-
 enum RoutePreference: String, CaseIterable, Identifiable {
     case leastCongested   = "最不堵车"
     case highwayFirst     = "大路优先"
     case shortestDistance = "距离最短"
-    case fewestLights     = "红绿灯最少"
+    case fewestLights     = "少路口"
 
     var id: String { rawValue }
 
@@ -20,32 +18,30 @@ enum RoutePreference: String, CaseIterable, Identifiable {
         case .shortestDistance:
             return "point.topleft.down.to.point.bottomright.curvepath"
         case .fewestLights:
-            return "stoplight.fill"
+            return "point.filled.topleft.down.curvedto.point.bottomright.up"
         }
     }
 
     var badgeText: String {
         switch self {
         case .leastCongested:
-            return "畅通快充"
+            return "畅通优选"
         case .highwayFirst:
-            return "高速/主干道"
+            return "主干大路"
         case .shortestDistance:
-            return "超短路程"
+            return "短里程"
         case .fewestLights:
-            return "少等红灯"
+            return "少转弯交汇"
         }
     }
 }
 
-// MARK: - 路线综合评估分析器
-
 struct RouteAssessment: Identifiable {
     let id = UUID()
-    let route: MKRoute
+    let navRoute: NavRoute
     let preferenceMatched: RoutePreference
     let tags: [String]
-    let estimatedLightsCount: Int
+    let estimatedIntersectionCount: Int
     let highwayRatio: Double
     let isRecommended: Bool
 }
@@ -53,51 +49,65 @@ struct RouteAssessment: Identifiable {
 @MainActor
 final class RoutePreferenceEngine {
 
+    /// 对完整的全程路线进行启发式得分评估
     static func evaluateRoutes(
-        _ routes: [MKRoute],
+        _ routes: [NavRoute],
         preference: RoutePreference
     ) -> [RouteAssessment] {
         guard !routes.isEmpty else { return [] }
 
-        var scoredList: [(route: MKRoute, lights: Int, hwRatio: Double)] = []
+        var metricsList: [(navRoute: NavRoute, intersections: Int, hwRatio: Double, score: Double)] = []
 
-        for route in routes {
-            var lightsCount = 0
+        let minTime = routes.map { $0.expectedTravelTime }.min() ?? 1.0
+        let minDistance = routes.map { $0.distance }.min() ?? 1.0
+
+        for r in routes {
+            var intersectionCount = 0
             var highwayDistance: CLLocationDistance = 0
 
-            for step in route.steps {
+            for step in r.steps {
                 let text = step.instructions.lowercased()
-                if text.contains("转") || text.contains("直行进入") || text.contains("路口") {
-                    lightsCount += 1
+                if text.contains("转") || text.contains("直行进入") || text.contains("路口") || text.contains("掉头") {
+                    intersectionCount += 1
                 }
-
                 if text.contains("高速") || text.contains("高架") || text.contains("快速路") || text.contains("大道") {
                     highwayDistance += step.distance
                 }
             }
 
-            let nonHwDist = max(0, route.distance - highwayDistance)
-            let baseLights = Int(nonHwDist / 600.0)
-            let totalEstimatedLights = max(2, lightsCount + baseLights)
+            let nonHwDist = max(0, r.distance - highwayDistance)
+            let baseIntersections = Int(nonHwDist / 700.0)
+            let totalEstimatedIntersections = max(2, intersectionCount + baseIntersections)
 
-            let ratio = route.distance > 0 ? (highwayDistance / route.distance) : 0
-            scoredList.append((route, totalEstimatedLights, ratio))
-        }
+            let ratio = r.distance > 0 ? (highwayDistance / r.distance) : 0
 
-        let sorted = scoredList.sorted { a, b in
+            let timeFactor = minTime / max(1.0, r.expectedTravelTime)
+            let distFactor = minDistance / max(1.0, r.distance)
+            let intersectionFactor = 1.0 / Double(max(1, totalEstimatedIntersections))
+
+            let compositeScore: Double
             switch preference {
             case .leastCongested:
-                return a.route.expectedTravelTime < b.route.expectedTravelTime
+                compositeScore = timeFactor * 0.70 + ratio * 0.20 + distFactor * 0.10
             case .highwayFirst:
-                if abs(a.hwRatio - b.hwRatio) > 0.15 {
-                    return a.hwRatio > b.hwRatio
-                }
-                return a.route.expectedTravelTime < b.route.expectedTravelTime
+                compositeScore = ratio * 0.65 + timeFactor * 0.25 + distFactor * 0.10
             case .shortestDistance:
-                return a.route.distance < b.route.distance
+                compositeScore = distFactor * 0.70 + timeFactor * 0.20 + ratio * 0.10
             case .fewestLights:
-                return a.lights < b.lights
+                compositeScore = intersectionFactor * 0.65 + timeFactor * 0.20 + ratio * 0.15
             }
+
+            metricsList.append((r, totalEstimatedIntersections, ratio, compositeScore))
+        }
+
+        let sorted = metricsList.sorted { a, b in
+            if a.score != b.score {
+                return a.score > b.score
+            }
+            if a.navRoute.expectedTravelTime != b.navRoute.expectedTravelTime {
+                return a.navRoute.expectedTravelTime < b.navRoute.expectedTravelTime
+            }
+            return a.navRoute.distance < b.navRoute.distance
         }
 
         return sorted.enumerated().map { index, item in
@@ -107,17 +117,17 @@ final class RoutePreferenceEngine {
                 tags.append(preference.badgeText)
             }
 
-            if item.hwRatio > 0.45 {
-                tags.append(String(format: "%.0f%%主干路", item.hwRatio * 100))
+            if item.hwRatio > 0.35 {
+                tags.append(String(format: "约%.0f%%主干路", item.hwRatio * 100))
             }
 
-            tags.append("约\(item.lights)个红绿灯")
+            tags.append("约\(item.intersections)处转弯/路口")
 
             return RouteAssessment(
-                route: item.route,
+                navRoute: item.navRoute,
                 preferenceMatched: preference,
                 tags: tags,
-                estimatedLightsCount: item.lights,
+                estimatedIntersectionCount: item.intersections,
                 highwayRatio: item.hwRatio,
                 isRecommended: (index == 0)
             )

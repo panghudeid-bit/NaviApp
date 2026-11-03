@@ -7,50 +7,55 @@ final class NavigationEngine: ObservableObject {
 
     @Published var isNavigating = false
     @Published var currentLocation: CLLocation?
-    @Published var currentRoute: MKRoute?
+    @Published var currentNavRoute: NavRoute?
 
     @Published var remainingDistance: CLLocationDistance = 0
     @Published var remainingTime: TimeInterval = 0
 
     @Published var isOffRoute = false
     @Published var hasArrived = false
-
     @Published var statusMessage = "等待开始导航"
 
     @Published var currentStepIndex: Int = 0
     @Published var nextStepInstruction: String = ""
-    @Published var distanceToNextTurn: Double = 0
+    @Published var distanceToNextTurn: CLLocationDistance = 0
 
-    // 车道级 3D 导航状态
     @Published var currentLanes: [LaneInfo] = []
-    private var lastAnnouncedLaneIndex: Int = -1
+    private var lastAnnouncedLaneStep: Int = -1
 
-    // 🌟 隧道与弱信号守护状态
     @Published var isWeakGPSSignal = false
-    private var consecutiveOffRouteCount = 0 // 连续偏航确认计数器（防突发单点漂移）
-    private var lastValidGPSTimestamp: TimeInterval = 0
+    private var consecutiveOffRouteCount = 0
 
-    private var destination: MKMapItem?
+    // 🌟 多航段状态追踪（如：途经点 -> 终点）
+    @Published var currentLegIndex: Int = 0
+    @Published var currentLegBadgeTitle: String = ""
+    private var hasReachedViaPoint = false
+
     private var currentPreference: RoutePreference = .leastCongested
 
+    // 🌟 修复关键：偏航重算状态锁与超时安全熔断机制（彻底消除并发取消死循环）
     private var isRerouting = false
     private var rerouteTask: Task<Void, Never>?
-    private var lastRerouteTimestamp: TimeInterval = 0
+    private var rerouteStartTime: TimeInterval = 0
+
+    // 🌟 修复关键：滑动窗口局部投影历史线段索引（防止吸附到高架下/平行路）
+    private var lastMatchedSegmentIndex: Int = 0
 
     // 事件通知
     var onOffRoute: (() -> Void)?
     var onArrival: (() -> Void)?
+    var onViaPointReached: ((String) -> Void)?
     var onStepAdvance: ((String) -> Void)?
     var onLaneAdvise: ((String) -> Void)?
-    var onRerouted: ((MKRoute) -> Void)?
+    var onRerouted: ((NavRoute) -> Void)?
 
     func start(
-        route: MKRoute,
-        destination: MKMapItem,
+        navRoute: NavRoute,
         preference: RoutePreference = .leastCongested
     ) {
-        self.currentRoute = route
-        self.destination = destination
+        stop()
+
+        self.currentNavRoute = navRoute
         self.currentPreference = preference
 
         self.isNavigating = true
@@ -58,15 +63,19 @@ final class NavigationEngine: ObservableObject {
         self.isOffRoute = false
         self.isWeakGPSSignal = false
         self.consecutiveOffRouteCount = 0
+        self.hasReachedViaPoint = false
+        self.currentLegIndex = 0
 
-        self.remainingDistance = route.distance
-        self.remainingTime = route.expectedTravelTime
+        self.remainingDistance = navRoute.distance
+        self.remainingTime = navRoute.expectedTravelTime
 
         self.currentStepIndex = 0
-        self.lastAnnouncedLaneIndex = -1
-        self.lastValidGPSTimestamp = Date().timeIntervalSince1970
+        self.lastAnnouncedLaneStep = -1
+        self.lastMatchedSegmentIndex = 0
 
-        if let firstValidStep = route.steps.first(where: { !$0.instructions.isEmpty }) {
+        updateLegBadge()
+
+        if let firstValidStep = navRoute.steps.first(where: { !$0.instructions.isEmpty }) {
             self.nextStepInstruction = firstValidStep.instructions
             self.distanceToNextTurn = firstValidStep.distance
             self.currentLanes = synthesizeLanes(for: firstValidStep.instructions)
@@ -76,7 +85,7 @@ final class NavigationEngine: ObservableObject {
             self.currentLanes = synthesizeLanes(for: "直行")
         }
 
-        self.statusMessage = "3D 车道级导航中"
+        self.statusMessage = "3D 导航中"
     }
 
     func stop() {
@@ -85,11 +94,37 @@ final class NavigationEngine: ObservableObject {
         self.hasArrived = false
         self.isWeakGPSSignal = false
         self.currentLanes = []
+        self.consecutiveOffRouteCount = 0
+        self.hasReachedViaPoint = false
+        self.currentLegIndex = 0
+        self.currentLegBadgeTitle = ""
+
+        self.currentNavRoute = nil
+        self.remainingDistance = 0
+        self.remainingTime = 0
+        self.currentStepIndex = 0
+        self.distanceToNextTurn = 0
+        self.nextStepInstruction = ""
+        self.lastMatchedSegmentIndex = 0
+
         self.rerouteTask?.cancel()
+        self.rerouteTask = nil
+        self.isRerouting = false
         self.statusMessage = "导航已结束"
     }
 
-    /// 核心位置更新驱动（增加隧道与弱信号过滤守卫）
+    private func updateLegBadge() {
+        if let nav = currentNavRoute, nav.viaMapItem != nil {
+            if !hasReachedViaPoint {
+                currentLegBadgeTitle = "前往途经点"
+            } else {
+                currentLegBadgeTitle = "前往终点"
+            }
+        } else {
+            currentLegBadgeTitle = ""
+        }
+    }
+
     func updateLocation(
         _ location: CLLocation,
         preference: RoutePreference = .leastCongested
@@ -97,75 +132,77 @@ final class NavigationEngine: ObservableObject {
         currentLocation = location
         self.currentPreference = preference
 
-        guard isNavigating,
-              let route = currentRoute,
-              let destination = destination else {
-            return
-        }
+        guard isNavigating, let navRoute = currentNavRoute else { return }
 
-        // ==========================================
-        // 🛡️ 核心守卫：隧道与 GPS 弱信号检测
-        // ==========================================
-        // 1. 水平精度判断（horizontalAccuracy < 0 为无效定位；大于 35 米说明信号严重遮挡或漂移）
+        // 1. 弱信号/隧道检测
         let accuracy = location.horizontalAccuracy
         let isAccuracyPoor = (accuracy < 0 || accuracy > 35.0)
-
-        // 2. 时间戳陈旧性判断（超过 6 秒未收到新卫星信号，判定为断点或长隧道）
-        let now = Date().timeIntervalSince1970
         let isDataStale = abs(location.timestamp.timeIntervalSinceNow) > 6.0
 
         if isAccuracyPoor || isDataStale {
             self.isWeakGPSSignal = true
-            self.statusMessage = "🛰️ 进入隧道/信号弱，保持规划"
-            self.consecutiveOffRouteCount = 0 // 弱信号期间清空偏航计数
-
-            // 弱信号或隧道内：严禁触发重新规划！沿路线继续推算进度
-            updateRemainingProgress(location, route: route)
+            self.statusMessage = "🛰️ 弱信号·保持路线"
+            self.consecutiveOffRouteCount = 0
+            updateRemainingProgress(location, navRoute: navRoute)
             return
         } else {
             self.isWeakGPSSignal = false
-            self.lastValidGPSTimestamp = now
         }
 
-        // 3. 到达判断（距离终点 35 米以内）
-        let destinationLocation = CLLocation(
-            latitude: destination.placemark.coordinate.latitude,
-            longitude: destination.placemark.coordinate.longitude
-        )
+        // 2. 途经点到达判断与无缝换段
+        if let via = navRoute.viaMapItem, !hasReachedViaPoint {
+            let viaCoord = via.placemark.coordinate
+            let distToVia = location.distance(from: CLLocation(latitude: viaCoord.latitude, longitude: viaCoord.longitude))
 
-        let distanceToDestination = location.distance(from: destinationLocation)
+            if distToVia < 40.0 {
+                hasReachedViaPoint = true
+                currentLegIndex = 1
+                updateLegBadge()
+                onViaPointReached?(via.name ?? "途经点")
+            }
+        }
 
-        if distanceToDestination < 35 {
+        // 3. 终点到达判断
+        let destCoord = navRoute.destinationMapItem.placemark.coordinate
+        let distanceToDestination = location.distance(from: CLLocation(latitude: destCoord.latitude, longitude: destCoord.longitude))
+
+        if distanceToDestination < 35.0 {
             if !hasArrived {
                 onArrival?()
             }
             hasArrived = true
             isNavigating = false
             currentLanes = []
-            statusMessage = "已到达目的地"
+            statusMessage = "已到达目的地附近"
             return
         }
 
-        // 4. 高精度下的偏航检测（结合双重连续确认防抖）
-        let distanceToRoute = distanceFromRoute(location.coordinate, route.polyline)
+        // 4. 偏航检测
+        let distanceToRoute = distanceFromRoute(location.coordinate, navRoute.combinedPolyline)
 
-        if distanceToRoute > 45 {
+        if distanceToRoute > 45.0 {
             consecutiveOffRouteCount += 1
 
-            // 必须连续 2 次以上在高精度下确认偏离，才判定为真实偏航（彻底消灭单点跳变误判）
             if consecutiveOffRouteCount >= 2 {
                 if !isOffRoute {
                     onOffRoute?()
                 }
                 isOffRoute = true
                 statusMessage = "正在重新规划最优路线..."
-                triggerImmediateReroute(from: location, to: destination, preference: currentPreference)
+
+                // 🌟 偏航期间依然基于终点测距动态刷新剩余指标，仪表盘不卡死停滞！
+                let straightLineDist = distanceToDestination
+                remainingDistance = straightLineDist * 1.25
+                let avgSpeed = max(8.0, location.speed)
+                remainingTime = remainingDistance / avgSpeed
+
+                triggerImmediateReroute(from: location, navRoute: navRoute, preference: currentPreference)
             }
         } else {
             consecutiveOffRouteCount = 0
             isOffRoute = false
             statusMessage = "3D 导航中"
-            updateRemainingProgress(location, route: route)
+            updateRemainingProgress(location, navRoute: navRoute)
         }
     }
 
@@ -204,20 +241,46 @@ final class NavigationEngine: ObservableObject {
         return minimumDistance
     }
 
+    /// 🌟 修复关键：带状态硬锁与超时熔断的偏航重算，绝对不会 1.5 秒自我取消
     private func triggerImmediateReroute(
         from location: CLLocation,
-        to destination: MKMapItem,
+        navRoute: NavRoute,
         preference: RoutePreference
     ) {
         let now = Date().timeIntervalSince1970
-        guard now - lastRerouteTimestamp > 1.5 else { return }
-        lastRerouteTimestamp = now
 
-        rerouteTask?.cancel()
+        // 1. 如果正在重算，检查是否超时（超过 8 秒视同网络卡死，才释放重新发起），严禁无脑打断！
+        if isRerouting {
+            if now - rerouteStartTime > 8.0 {
+                print("重算超时，强制重置锁状态")
+                rerouteTask?.cancel()
+                isRerouting = false
+            } else {
+                // 网络计算正在进行中，平稳等待其返回，绝不 cancel！
+                return
+            }
+        }
+
+        isRerouting = true
+        rerouteStartTime = now
+
         rerouteTask = Task {
+            defer {
+                Task { @MainActor in
+                    self.isRerouting = false
+                }
+            }
+
+            // 如果途经点尚未到达，重算保持前往途经点再到终点；若已过途经点，则直接重算到终点
             let request = MKDirections.Request()
             request.source = MKMapItem(placemark: MKPlacemark(coordinate: location.coordinate))
-            request.destination = destination
+
+            if let via = navRoute.viaMapItem, !self.hasReachedViaPoint {
+                request.destination = via
+            } else {
+                request.destination = navRoute.destinationMapItem
+            }
+
             request.transportType = .automobile
             request.requestsAlternateRoutes = true
 
@@ -225,18 +288,24 @@ final class NavigationEngine: ObservableObject {
                 let response = try await MKDirections(request: request).calculate()
                 guard !Task.isCancelled, !response.routes.isEmpty else { return }
 
+                // 转换并评分
+                let newNavRoutes = response.routes.map {
+                    NavRoute(singleRoute: $0, destination: navRoute.destinationMapItem)
+                }
+
                 let assessments = RoutePreferenceEngine.evaluateRoutes(
-                    response.routes,
+                    newNavRoutes,
                     preference: preference
                 )
 
-                guard let bestRoute = assessments.first?.route else { return }
+                guard let bestRoute = assessments.first?.navRoute else { return }
 
-                self.currentRoute = bestRoute
+                self.currentNavRoute = bestRoute
                 self.remainingDistance = bestRoute.distance
                 self.remainingTime = bestRoute.expectedTravelTime
                 self.isOffRoute = false
                 self.consecutiveOffRouteCount = 0
+                self.lastMatchedSegmentIndex = 0
                 self.statusMessage = "已重新规划 \(preference.rawValue) 路线"
 
                 self.currentStepIndex = 0
@@ -256,21 +325,26 @@ final class NavigationEngine: ObservableObject {
         }
     }
 
-    private func updateRemainingProgress(_ location: CLLocation, route: MKRoute) {
-        let polyline = route.polyline
+    /// 🌟 修复关键：滑动窗口局部投影算法（彻底消灭平行路与高架吸附跳变）
+    private func updateRemainingProgress(_ location: CLLocation, navRoute: NavRoute) {
+        let polyline = navRoute.combinedPolyline
         guard polyline.pointCount >= 2 else { return }
 
         let points = polyline.points()
         let userPoint = MKMapPoint(location.coordinate)
+        let totalSegments = polyline.pointCount - 1
 
-        var cumulativeDistance: CLLocationDistance = 0
+        // 局部搜索窗口：只在上次匹配段前后范围（前退 10 段，前瞻 35 段）搜索，避免远距离吸附
+        let searchStart = max(0, lastMatchedSegmentIndex - 10)
+        let searchEnd = min(totalSegments - 1, lastMatchedSegmentIndex + 35)
+
         var bestDistance = CLLocationDistance.greatestFiniteMagnitude
-        var distanceAlongRoute: CLLocationDistance = 0
+        var bestSegIndex = lastMatchedSegmentIndex
+        var bestT: Double = 0
 
-        for index in 0..<(polyline.pointCount - 1) {
+        for index in searchStart...searchEnd {
             let a = points[index]
             let b = points[index + 1]
-            let segmentLength = a.distance(to: b)
 
             let dx = b.x - a.x
             let dy = b.y - a.y
@@ -284,35 +358,56 @@ final class NavigationEngine: ObservableObject {
             }
 
             let nearestPoint = MKMapPoint(x: a.x + t * dx, y: a.y + t * dy)
-            let distance = userPoint.distance(to: nearestPoint)
+            let dist = userPoint.distance(to: nearestPoint)
 
-            if distance < bestDistance {
-                bestDistance = distance
-                distanceAlongRoute = cumulativeDistance + segmentLength * t
+            if dist < bestDistance {
+                bestDistance = dist
+                bestSegIndex = index
+                bestT = t
             }
-
-            cumulativeDistance += segmentLength
         }
 
-        remainingDistance = max(0, route.distance - distanceAlongRoute)
-        let remainingRatio = route.distance > 0 ? remainingDistance / route.distance : 0
-        remainingTime = route.expectedTravelTime * remainingRatio
+        // 更新历史匹配锚点段（单向往前滚动）
+        lastMatchedSegmentIndex = max(lastMatchedSegmentIndex, bestSegIndex)
 
-        var stepCumulative: CLLocationDistance = 0
-        var detectedStepIndex = 0
+        // 累加计算已行驶米数
+        var cumulativeDistance: CLLocationDistance = 0
+        for i in 0..<bestSegIndex {
+            cumulativeDistance += points[i].distance(to: points[i + 1])
+        }
+        let currentSegMeters = points[bestSegIndex].distance(to: points[bestSegIndex + 1])
+        let distanceAlongRoute = cumulativeDistance + currentSegMeters * bestT
 
-        for (index, step) in route.steps.enumerated() {
-            stepCumulative += step.distance
-            if distanceAlongRoute < stepCumulative {
-                detectedStepIndex = index
-                distanceToNextTurn = max(0, stepCumulative - distanceAlongRoute)
+        // 剩余里程与耗时严格单调递减
+        remainingDistance = max(0, navRoute.distance - distanceAlongRoute)
+        let ratio = navRoute.distance > 0 ? (remainingDistance / navRoute.distance) : 0
+        remainingTime = max(0, navRoute.expectedTravelTime * ratio)
+
+        // 步骤推进
+        var stepAccum: CLLocationDistance = 0
+        var candidateIndex = currentStepIndex
+        var matched = false
+
+        for (idx, step) in navRoute.steps.enumerated() {
+            stepAccum += step.distance
+            if distanceAlongRoute < stepAccum {
+                candidateIndex = idx
+                distanceToNextTurn = max(0, stepAccum - distanceAlongRoute)
+                matched = true
                 break
             }
         }
 
-        if detectedStepIndex != currentStepIndex && detectedStepIndex < route.steps.count {
-            currentStepIndex = detectedStepIndex
-            let instruction = route.steps[detectedStepIndex].instructions
+        if !matched {
+            candidateIndex = max(0, navRoute.steps.count - 1)
+            distanceToNextTurn = 0
+        }
+
+        let finalStepIndex = max(currentStepIndex, candidateIndex)
+
+        if finalStepIndex != currentStepIndex && finalStepIndex < navRoute.steps.count {
+            currentStepIndex = finalStepIndex
+            let instruction = navRoute.steps[finalStepIndex].instructions
             if !instruction.isEmpty {
                 nextStepInstruction = instruction
                 currentLanes = synthesizeLanes(for: instruction)
@@ -320,11 +415,11 @@ final class NavigationEngine: ObservableObject {
             }
         }
 
-        if distanceToNextTurn < 500 && distanceToNextTurn > 250 && lastAnnouncedLaneIndex != currentStepIndex {
-            lastAnnouncedLaneIndex = currentStepIndex
-            let laneAdvise = generateLaneSpeechAdvice(for: nextStepInstruction)
-            if !laneAdvise.isEmpty {
-                onLaneAdvise?(laneAdvise)
+        if distanceToNextTurn <= 400 && distanceToNextTurn > 150 && lastAnnouncedLaneStep != currentStepIndex {
+            lastAnnouncedLaneStep = currentStepIndex
+            let advise = generateLaneSpeechAdvice(for: nextStepInstruction)
+            if !advise.isEmpty {
+                onLaneAdvise?(advise)
             }
         }
     }
@@ -366,13 +461,13 @@ final class NavigationEngine: ObservableObject {
     private func generateLaneSpeechAdvice(for instruction: String) -> String {
         let text = instruction.lowercased()
         if text.contains("左转") {
-            return "前方请向左变道，进入左侧车道"
+            return "前方请准备左转，请注意观察路面标线提前变道"
         } else if text.contains("右转") || text.contains("匝道") || text.contains("出口") {
-            return "前方请向右变道，进入右侧车道"
+            return "前方请准备右转，请注意观察路面标线提前变道"
         } else if text.contains("掉头") {
-            return "前方请提前并入最左侧掉头车道"
+            return "前方请准备掉头，请提前并入左侧转向道"
         } else {
-            return "请保持在直行车道行驶"
+            return "请沿当前道路继续直行"
         }
     }
 }
