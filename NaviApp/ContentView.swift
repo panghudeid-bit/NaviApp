@@ -83,8 +83,6 @@ struct ContentView: View {
 
     @State private var viaText = ""
 
-    @State private var destinationText = ""
-
     @State private var startCoordinate: CLLocationCoordinate2D?
 
     @State private var endCoordinate: CLLocationCoordinate2D?
