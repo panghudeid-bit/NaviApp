@@ -137,8 +137,16 @@ struct ContentView: View {
     @StateObject private var navigationEngine = NavigationEngine()
     @StateObject private var voiceNavigation = VoiceNavigation()
     @StateObject private var routePlanner = RoutePlanner()
+    @StateObject private var weatherService = WeatherService()
+    @StateObject private var placeStore = PlaceStore()
+    @StateObject private var speechRecognizer = SpeechRecognizer()
 
     @State private var cameraPosition: MapCameraPosition = .automatic
+
+    @State private var mapStyleMode: MapDisplayMode = .standard
+    @State private var parkingCoordinate: CLLocationCoordinate2D?
+    /// 从收藏/最近列表选中地点时记住的地址，用于回写「最近搜索」
+    @State private var lastSelectedAddress: String = ""
 
     @State private var selectedPreference: RoutePreference = .leastCongested
     @State private var routeAssessments: [RouteAssessment] = []
@@ -155,10 +163,6 @@ struct ContentView: View {
 
     @State private var startText = ""
     @State private var viaText = ""
-
-    /// 历史目的地（最多 8 条，持久化到 UserDefaults）
-    @State private var destinationHistory: [String] =
-        UserDefaults.standard.stringArray(forKey: "naviapp.destinationHistory") ?? []
 
     @State private var startCoordinate: CLLocationCoordinate2D?
     @State private var viaCoordinate: CLLocationCoordinate2D?
@@ -183,15 +187,24 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-
-            // 1. 地图视图
+        ZStack {
             Map(position: $cameraPosition) {
 
-                // 🌟 [P1] 使用平滑有效的导航坐标，弱网下位置冻结保护，不随漂移乱晃
+                // 当前位置：导航中显示车标，浏览时显示蓝点
                 if let loc = navigationEngine.filteredNavLocation ?? locationManager.location {
                     Annotation("当前位置", coordinate: loc.coordinate) {
-                        car3DMarker(location: loc)
+                        if navigationEngine.isNavigating {
+                            car3DMarker(location: loc)
+                        } else {
+                            CurrentLocationDot()
+                        }
+                    }
+                }
+
+                // 停车位置（手动记录）
+                if let parking = parkingCoordinate {
+                    Annotation("停车位置", coordinate: parking) {
+                        ParkingMarkerView()
                     }
                 }
 
@@ -241,48 +254,19 @@ struct ContentView: View {
                     }
                 }
             }
-            .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .including([.parking, .gasStation])))
+            .mapStyle(resolvedMapStyle)
             .mapControls {
-                MapCompass()
                 MapScaleView()
-                MapPitchToggle()
             }
             .ignoresSafeArea()
 
-            // 2. 交互面板
-            VStack(spacing: 12) {
-
-                // 🌟 [P1] 精确位置未开启警告横幅
-                if !locationManager.isFullAccuracyAuthorized {
-                    precisionWarningBanner
-                }
-
-                if navigationEngine.isNavigating {
-                    LaneGuidanceView(
-                        lanes: navigationEngine.currentLanes,
-                        nextTurnInstruction: navigationEngine.nextStepInstruction,
-                        distanceToNextStep: navigationEngine.distanceToNextTurn,
-                        isWeakGPS: navigationEngine.isWeakGPSSignal,
-                        currentLegTitle: navigationEngine.currentLegBadgeTitle
-                    )
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                } else {
-                    searchAndPreferencePanel
-                }
-
-                Spacer()
-
-                if navigationEngine.isNavigating {
-                    navigationDashboardView
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if !displayRoutes.isEmpty {
-                    routeComparisonPanel
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+            if navigationEngine.isNavigating {
+                navigationOverlay
+            } else if isHomeMode {
+                homeOverlay
+            } else {
+                planningOverlay
             }
-            .padding(.horizontal, 14)
-            .padding(.top, navigationEngine.isNavigating ? 48 : 56)
-            .padding(.bottom, 14)
 
             if showResults {
                 resultsOverlay
@@ -290,64 +274,19 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermission()
-
-            navigationEngine.onOffRoute = {
-                voiceNavigation.announceOffRoute()
-            }
-
-            // 🌟 [P1] 修复到达播报被立即掐断的 Bug：播放到达语音，并在语音委托完成之后才安全退出音频模式
-            navigationEngine.onArrival = {
-                locationManager.exitNavigationMode()
-                withAnimation {
-                    cameraPosition = .automatic
-                }
-                voiceNavigation.announceArrival {
-                    // 播报彻底结束后才释放系统音频焦点！
-                    voiceNavigation.exitNavigationAudioMode()
-                }
-            }
-
-            navigationEngine.onStepAdvance = { instruction in
-                voiceNavigation.speak(instruction)
-            }
-
-            navigationEngine.onLaneAdvise = { laneText in
-                voiceNavigation.speak(laneText)
-            }
-
-            navigationEngine.onViaPointReached = { viaName in
-                voiceNavigation.speak("已到达途经点\(viaName)，正在继续前往最终目的地", isUrgent: true)
-            }
-
-            navigationEngine.onRerouted = { newNavRoute in
-                displayRoutes = [newNavRoute]
-                selectedRouteIndex = 0
-                voiceNavigation.speak("已偏离路线，已为您按\(selectedPreference.rawValue)重算最优路线", isUrgent: true)
-            }
+            speechRecognizer.requestAuthorization()
+            configureNavigationCallbacks()
 
             withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) {
                 radarPulse = true
             }
         }
         .onChange(of: locationManager.location) { _, newLocation in
-            guard let newLocation = newLocation else { return }
-
-            let isUsingCurrentLocation = startText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || startText == "我的位置"
-            if isUsingCurrentLocation {
-                startCoordinate = newLocation.coordinate
-                startMapItem = MKMapItem(placemark: MKPlacemark(coordinate: newLocation.coordinate))
-            }
-
-            navigationEngine.updateLocation(newLocation, preference: selectedPreference)
-
-            // 🌟 [P1] 弱网时不拿着漂移坐标刷新 3D 相机；使用过滤平滑后的坐标跟随
-            if navigationEngine.isNavigating {
-                if let safeLoc = navigationEngine.filteredNavLocation {
-                    update3DNavigationCamera(with: safeLoc)
-                }
-            } else if followUser && displayRoutes.isEmpty {
-                moveCamera(to: newLocation.coordinate)
-            }
+            handleLocationChange(newLocation)
+        }
+        .onChange(of: speechRecognizer.transcript) { _, text in
+            guard !text.isEmpty else { return }
+            destinationText = text
         }
         .alert("提示", isPresented: $showError) {
             Button("确定", role: .cancel) {}
@@ -357,6 +296,298 @@ struct ContentView: View {
         .sheet(isPresented: $showRouteDetails) {
             routeDetailsSheet
                 .presentationDetents([.medium, .large])
+        }
+    }
+
+    // MARK: - 界面状态判定
+
+    private var isPlanningMode: Bool {
+        !displayRoutes.isEmpty || destinationMapItem != nil || endCoordinate != nil
+    }
+
+    private var isHomeMode: Bool {
+        !navigationEngine.isNavigating && !isPlanningMode
+    }
+
+    private var resolvedMapStyle: MapStyle {
+        switch mapStyleMode {
+        case .standard:
+            return .standard(elevation: .realistic, pointsOfInterest: .including([.parking, .gasStation]))
+        case .hybrid:
+            return .hybrid(
+                elevation: .realistic,
+                pointsOfInterest: .including([.parking, .gasStation]),
+                showsTraffic: true
+            )
+        }
+    }
+
+    /// 设备朝向角度（0 为正北）
+    private var currentHeading: Double {
+        guard let heading = locationManager.heading else { return 0 }
+        return heading.trueHeading >= 0 ? heading.trueHeading : heading.magneticHeading
+    }
+
+    // MARK: - 导航态界面
+
+    private var navigationOverlay: some View {
+        VStack(spacing: 12) {
+            if !locationManager.isFullAccuracyAuthorized {
+                precisionWarningBanner
+            }
+
+            LaneGuidanceView(
+                lanes: navigationEngine.currentLanes,
+                nextTurnInstruction: navigationEngine.nextStepInstruction,
+                distanceToNextStep: navigationEngine.distanceToNextTurn,
+                isWeakGPS: navigationEngine.isWeakGPSSignal,
+                currentLegTitle: navigationEngine.currentLegBadgeTitle
+            )
+            .transition(.move(edge: .top).combined(with: .opacity))
+
+            Spacer()
+
+            navigationDashboardView
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 52)
+        .padding(.bottom, 14)
+    }
+
+    // MARK: - 路线规划态界面
+
+    private var planningOverlay: some View {
+        VStack(spacing: 12) {
+            if !locationManager.isFullAccuracyAuthorized {
+                precisionWarningBanner
+            }
+
+            searchAndPreferencePanel
+
+            Spacer()
+
+            if !displayRoutes.isEmpty {
+                routeComparisonPanel
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 56)
+        .padding(.bottom, 14)
+    }
+
+    // MARK: - 首页态界面
+
+    private var homeOverlay: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
+                WeatherCardView(
+                    snapshot: weatherService.snapshot,
+                    isLoading: weatherService.isLoading
+                )
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 56)
+
+            Spacer(minLength: 0)
+
+            HStack(alignment: .bottom, spacing: 0) {
+                CompassBadgeView(heading: currentHeading, action: resetHeadingToNorth)
+
+                Spacer(minLength: 0)
+
+                VStack(spacing: 10) {
+                    mapLayerButton
+                    parkingButton
+                    recenterButton
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+
+            HomePanelView(
+                searchText: $destinationText,
+                recents: placeStore.recents,
+                favorites: placeStore.favorites,
+                isSearching: isSearching,
+                isRecording: speechRecognizer.isRecording,
+                onSearch: { Task { await searchPlaces() } },
+                onVoiceTap: { speechRecognizer.toggle() },
+                onAddFavorite: { addCurrentAsFavorite() },
+                onSelectPlace: { place in selectSavedPlace(place) },
+                onDeleteRecent: { place in placeStore.removeRecent(place) },
+                onClearRecents: { placeStore.clearRecents() }
+            )
+            .frame(height: 328)
+        }
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    // MARK: - 悬浮按钮
+
+    private var mapLayerButton: some View {
+        RoundMapButton(action: toggleMapStyle) {
+            Image(systemName: mapStyleMode == .standard ? "globe.asia.australia.fill" : "map.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+    }
+
+    private var parkingButton: some View {
+        RoundMapButton(action: toggleParkingSpot) {
+            Image(systemName: parkingCoordinate == nil ? "car" : "car.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(parkingCoordinate == nil ? Color.white : Color(hex: "4FC3F7"))
+        }
+    }
+
+    private var recenterButton: some View {
+        RoundMapButton(action: recenterToUser) {
+            Image(systemName: "location.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(followUser ? Color(hex: "00F2FE") : Color.white)
+        }
+    }
+
+    // MARK: - 地图交互
+
+    private func toggleMapStyle() {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            mapStyleMode = mapStyleMode.next
+        }
+    }
+
+    private func recenterToUser() {
+        guard let coordinate = locationManager.location?.coordinate else {
+            errorMessage = "正在获取当前位置，请稍候"
+            showError = true
+            return
+        }
+
+        followUser = true
+        withAnimation(.easeInOut(duration: 0.6)) {
+            cameraPosition = .camera(
+                MapCamera(centerCoordinate: coordinate, distance: 1200, heading: 0, pitch: 0)
+            )
+        }
+    }
+
+    private func resetHeadingToNorth() {
+        recenterToUser()
+    }
+
+    private func toggleParkingSpot() {
+        if parkingCoordinate != nil {
+            withAnimation {
+                parkingCoordinate = nil
+            }
+            return
+        }
+
+        guard let coordinate = locationManager.location?.coordinate else {
+            errorMessage = "正在获取当前位置，请稍候"
+            showError = true
+            return
+        }
+
+        withAnimation {
+            parkingCoordinate = coordinate
+        }
+        voiceNavigation.speak("已记录停车位置", isUrgent: false)
+    }
+
+    // MARK: - 地点选择
+
+    private func selectSavedPlace(_ place: SavedPlace) {
+        endCoordinate = place.coordinate
+        endName = place.name
+        destinationText = place.name
+        destinationMapItem = nil
+        lastSelectedAddress = place.address
+
+        Task { await calculateRoute() }
+    }
+
+    private func addCurrentAsFavorite() {
+        guard let coordinate = locationManager.location?.coordinate else {
+            errorMessage = "正在获取当前位置，请稍候"
+            showError = true
+            return
+        }
+
+        let place = SavedPlace(
+            name: "收藏地点 \(placeStore.favorites.count + 1)",
+            address: "当前位置",
+            coordinate: coordinate
+        )
+        placeStore.addFavorite(place)
+        voiceNavigation.speak("已添加收藏地点", isUrgent: false)
+    }
+
+    // MARK: - 定位与导航回调
+
+    private func handleLocationChange(_ newLocation: CLLocation?) {
+        guard let newLocation = newLocation else { return }
+
+        let isUsingCurrentLocation = startText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || startText == "我的位置"
+        if isUsingCurrentLocation {
+            startCoordinate = newLocation.coordinate
+            startMapItem = MKMapItem(placemark: MKPlacemark(coordinate: newLocation.coordinate))
+        }
+
+        navigationEngine.updateLocation(newLocation, preference: selectedPreference)
+
+        if navigationEngine.isNavigating {
+            if let safeLoc = navigationEngine.filteredNavLocation {
+                update3DNavigationCamera(with: safeLoc)
+            }
+        } else if followUser && displayRoutes.isEmpty {
+            moveCamera(to: newLocation.coordinate)
+        }
+
+        let coordinate = newLocation.coordinate
+        Task {
+            await weatherService.refreshIfNeeded(for: coordinate)
+        }
+    }
+
+    private func configureNavigationCallbacks() {
+        navigationEngine.onOffRoute = {
+            voiceNavigation.announceOffRoute()
+        }
+
+        navigationEngine.onArrival = {
+            locationManager.exitNavigationMode()
+            withAnimation {
+                cameraPosition = .automatic
+            }
+            voiceNavigation.announceArrival {
+                voiceNavigation.exitNavigationAudioMode()
+            }
+        }
+
+        navigationEngine.onStepAdvance = { instruction in
+            voiceNavigation.speak(instruction)
+        }
+
+        navigationEngine.onLaneAdvise = { laneText in
+            voiceNavigation.speak(laneText)
+        }
+
+        navigationEngine.onViaPointReached = { viaName in
+            voiceNavigation.speak("已到达途经点\(viaName)，正在继续前往最终目的地", isUrgent: true)
+        }
+
+        navigationEngine.onRerouted = { newNavRoute in
+            displayRoutes = [newNavRoute]
+            selectedRouteIndex = 0
+            voiceNavigation.speak(
+                "已偏离路线，已为您按\(selectedPreference.rawValue)重算最优路线",
+                isUrgent: true
+            )
         }
     }
 
@@ -562,10 +793,6 @@ struct ContentView: View {
                     }
                     .disabled(destinationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-
-                if !destinationHistory.isEmpty {
-                    destinationHistoryRow
-                }
             }
 
             Divider()
@@ -667,53 +894,7 @@ struct ContentView: View {
         .shadow(color: Color.black.opacity(0.5), radius: 16, x: 0, y: 8)
     }
 
-    // MARK: - 历史目的地与当前位置快捷入口
-
-    /// 历史目的地横向条：点一下即可回填并重新搜索
-    private var destinationHistoryRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.45))
-
-                ForEach(destinationHistory, id: \.self) { item in
-                    destinationHistoryChip(item)
-                }
-
-                Button {
-                    clearDestinationHistory()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.3))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private func destinationHistoryChip(_ item: String) -> some View {
-        Button {
-            destinationText = item
-            Task { await searchPlaces() }
-        } label: {
-            Text(item)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.white.opacity(0.1))
-                .foregroundStyle(.white.opacity(0.85))
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func clearDestinationHistory() {
-        destinationHistory = []
-        UserDefaults.standard.removeObject(forKey: "naviapp.destinationHistory")
-    }
+    // MARK: - 首页快捷入口
 
     /// 把起点重置为「我的位置」，并按需重新规划路线
     private func useCurrentLocationAsStart() {
@@ -732,21 +913,55 @@ struct ContentView: View {
         }
     }
 
-    /// 记录一次成功使用的目的地（去重、最多 8 条）
+    /// 记录一次成功使用的目的地，写入「最近搜索」
     private func recordDestination(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != "我的位置" else { return }
 
-        var list = destinationHistory.filter { $0 != trimmed }
-        list.insert(trimmed, at: 0)
-        if list.count > 8 {
-            list = Array(list.prefix(8))
-        }
+        guard let coordinate = endCoordinate ?? destinationMapItem?.placemark.coordinate else { return }
 
-        destinationHistory = list
-        UserDefaults.standard.set(list, forKey: "naviapp.destinationHistory")
+        let place = SavedPlace(
+            name: trimmed,
+            address: resolvedDestinationAddress,
+            coordinate: coordinate
+        )
+        placeStore.recordRecent(place)
     }
 
+    /// 最近一次解析到的目的地地址，用于「最近搜索」的副标题
+    private var resolvedDestinationAddress: String {
+        if let item = destinationMapItem {
+            let text = ContentView.formatAddress(item.placemark)
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return lastSelectedAddress
+    }
+
+    /// 把 MKPlacemark 拼成一行中文地址
+    static func formatAddress(_ placemark: MKPlacemark) -> String {
+        var parts: [String] = []
+
+        if let admin = placemark.administrativeArea, !admin.isEmpty {
+            parts.append(admin)
+        }
+        if let city = placemark.locality, !city.isEmpty, city != placemark.administrativeArea {
+            parts.append(city)
+        }
+        if let district = placemark.subLocality, !district.isEmpty {
+            parts.append(district)
+        }
+        if let road = placemark.thoroughfare, !road.isEmpty {
+            if let number = placemark.subThoroughfare, !number.isEmpty {
+                parts.append(number + road)
+            } else {
+                parts.append(road)
+            }
+        }
+
+        return parts.joined(separator: " ")
+    }
     // MARK: - 路线对比卡片
 
     private var routeComparisonPanel: some View {
@@ -1175,6 +1390,7 @@ struct ContentView: View {
         destinationMapItem = item
         endCoordinate = item.placemark.coordinate
         endName = item.name ?? "目的地"
+        lastSelectedAddress = ContentView.formatAddress(item.placemark)
         showResults = false
 
         await calculateRoute()

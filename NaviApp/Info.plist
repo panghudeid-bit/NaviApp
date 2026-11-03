@@ -17,7 +17,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.5</string>
+    <string>2.6</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleIconName</key>
@@ -48,6 +48,12 @@
         <string>location</string>
         <string>audio</string>
     </array>
+
+    <!-- 语音搜索权限 -->
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>需要用语音识别把您说的话转成目的地文字，方便驾驶时免手输入目的地。</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>需要访问麦克风，以便采集您的语音搜索指令。</string>
 
     <key>UILaunchScreen</key>
     <dict/>
