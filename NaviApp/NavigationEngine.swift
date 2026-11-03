@@ -17,12 +17,16 @@ final class NavigationEngine: ObservableObject {
 
     @Published var statusMessage = "等待开始导航"
 
+    @Published var currentStepIndex: Int = 0
+    @Published var nextStepInstruction: String = ""
+
     private var destination: MKMapItem?
     private var lastRerouteTime = Date.distantPast
 
     // 语音播报回调
     var onOffRoute: (() -> Void)?
     var onArrival: (() -> Void)?
+    var onStepAdvance: ((String) -> Void)?
 
     // 开始导航
     func start(
@@ -38,6 +42,9 @@ final class NavigationEngine: ObservableObject {
 
         remainingDistance = route.distance
         remainingTime = route.expectedTravelTime
+
+        currentStepIndex = 0
+        nextStepInstruction = route.steps.first?.instructions ?? ""
 
         statusMessage = "导航进行中"
     }
@@ -334,5 +341,29 @@ final class NavigationEngine: ObservableObject {
 
         remainingTime =
             route.expectedTravelTime * remainingRatio
+
+        // 判断当前步骤
+        let traveledDistance = route.distance - remainingDistance
+
+        var stepCumulative: CLLocationDistance = 0
+        var newStepIndex = 0
+
+        for (index, step) in route.steps.enumerated() {
+            if traveledDistance >= stepCumulative {
+                newStepIndex = index
+                stepCumulative += step.distance
+            } else {
+                break
+            }
+        }
+
+        if newStepIndex != currentStepIndex && newStepIndex < route.steps.count {
+            currentStepIndex = newStepIndex
+
+            let nextIndex = min(newStepIndex + 1, route.steps.count - 1)
+            nextStepInstruction = route.steps[nextIndex].instructions
+
+            onStepAdvance?(nextStepInstruction)
+        }
     }
 }

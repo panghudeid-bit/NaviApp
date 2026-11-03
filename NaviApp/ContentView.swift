@@ -180,6 +180,19 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermission()
+
+            // 绑定语音回调
+            navigationEngine.onOffRoute = {
+                voiceNavigation.announceOffRoute()
+            }
+
+            navigationEngine.onArrival = {
+                voiceNavigation.announceArrival()
+            }
+
+            navigationEngine.onStepAdvance = { instruction in
+                voiceNavigation.speak(instruction)
+            }
         }
         .onChange(of: locationManager.location) {
             newLocation in
@@ -552,6 +565,12 @@ struct ContentView: View {
                         "预计剩余：\(navigationEngine.remainingTime.formattedDuration)"
                     )
 
+                    if !navigationEngine.nextStepInstruction.isEmpty {
+                        Text("➡️ \(navigationEngine.nextStepInstruction)")
+                            .font(.subheadline)
+                            .foregroundStyle(.blue)
+                    }
+
                     if navigationEngine.isOffRoute {
                         Text("正在重新规划路线")
                             .foregroundStyle(.orange)
@@ -665,15 +684,6 @@ struct ContentView: View {
                     guard let route = selectedRoute,
                           let destination = selectedDestination else {
                         return
-                    }
-
-                    // 绑定语音回调
-                    navigationEngine.onOffRoute = {
-                        voiceNavigation.announceOffRoute()
-                    }
-
-                    navigationEngine.onArrival = {
-                        voiceNavigation.announceArrival()
                     }
 
                     navigationEngine.start(
