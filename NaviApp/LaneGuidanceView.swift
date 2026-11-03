@@ -46,52 +46,67 @@ struct LaneGuidanceView: View {
     var body: some View {
         VStack(spacing: 8) {
             // 顶部：下一路口转向与剩余米数
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 ZStack {
-                    Circle()
+                    RoundedRectangle(cornerRadius: 10)
                         .fill(
                             LinearGradient(
-                                colors: [.blue, .cyan],
+                                colors: [Color(hex: "00C6FF"), Color(hex: "0072FF")],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 36, height: 36)
-                        .shadow(color: .blue.opacity(0.4), radius: 6, x: 0, y: 3)
+                        .frame(width: 40, height: 40)
+                        .shadow(color: Color(hex: "0072FF").opacity(0.5), radius: 8, x: 0, y: 3)
 
                     Image(systemName: "arrow.turn.up.right.diamond.fill")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(.white)
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(nextTurnInstruction.isEmpty ? "沿当前道路行驶" : nextTurnInstruction)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(nextTurnInstruction.isEmpty ? "沿当前道路直行" : nextTurnInstruction)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
 
-                    Text(distanceToNextStep > 0 ? String(format: "%.0f 米后转向", distanceToNextStep) : "请在当前路口变道")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.8))
+                    HStack(spacing: 6) {
+                        Text(distanceToNextStep > 0 ? String(format: "%.0f 米后", distanceToNextStep) : "请在当前路口变道")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color(hex: "00F2FE"))
+
+                        Text("·")
+                            .foregroundStyle(.white.opacity(0.4))
+
+                        Text("建议按推荐车道行驶")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
                 }
 
                 Spacer()
 
                 // 3D 车道级徽标
-                Text("车道级 3D")
-                    .font(.system(size: 10, weight: .heavy))
-                    .foregroundStyle(.yellow)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.black.opacity(0.4))
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule().stroke(Color.yellow.opacity(0.6), lineWidth: 1)
-                    )
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color(hex: "00F2FE"))
+                        .frame(width: 6, height: 6)
+                    Text("3D车道级")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundStyle(Color(hex: "00F2FE"))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.5))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule().stroke(Color(hex: "00F2FE").opacity(0.4), lineWidth: 1)
+                )
             }
 
             Divider()
-                .background(Color.white.opacity(0.2))
+                .background(Color.white.opacity(0.15))
 
             // 底部：车道级 3D 箭头矩阵
             HStack(spacing: 8) {
@@ -99,65 +114,59 @@ struct LaneGuidanceView: View {
                     VStack(spacing: 4) {
                         Image(systemName: lane.iconName)
                             .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(lane.isRecommended ? Color.white : Color.gray.opacity(0.7))
+                            .foregroundStyle(lane.isRecommended ? Color(hex: "00F2FE") : Color.white.opacity(0.35))
                             .shadow(
-                                color: lane.isRecommended ? Color.cyan : Color.clear,
+                                color: lane.isRecommended ? Color(hex: "00F2FE").opacity(0.8) : Color.clear,
                                 radius: lane.isRecommended ? 6 : 0
                             )
 
-                        // 推荐车道高亮标线
+                        // 推荐车道高亮发光地标
                         Capsule()
                             .fill(
                                 lane.isRecommended
-                                ? LinearGradient(colors: [.green, .cyan], startPoint: .leading, endPoint: .trailing)
-                                : LinearGradient(colors: [.gray.opacity(0.3), .gray.opacity(0.1)], startPoint: .leading, endPoint: .trailing)
+                                ? LinearGradient(colors: [Color(hex: "00F2FE"), Color(hex: "4FACFE")], startPoint: .leading, endPoint: .trailing)
+                                : LinearGradient(colors: [Color.white.opacity(0.1), Color.white.opacity(0.05)], startPoint: .leading, endPoint: .trailing)
                             )
                             .frame(height: 3)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                     .background(
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: 10)
                             .fill(
                                 lane.isRecommended
-                                ? Color.blue.opacity(0.55)
-                                : Color.black.opacity(0.25)
+                                ? Color(hex: "0072FF").opacity(0.35)
+                                : Color.white.opacity(0.04)
                             )
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: 10)
                             .stroke(
-                                lane.isRecommended ? Color.cyan : Color.white.opacity(0.1),
-                                lineWidth: lane.isRecommended ? 1.5 : 0.5
+                                lane.isRecommended ? Color(hex: "00F2FE").opacity(0.8) : Color.white.opacity(0.08),
+                                lineWidth: lane.isRecommended ? 1.5 : 0.6
                             )
                     )
-                    .scaleEffect(lane.isRecommended ? 1.05 : 0.96)
+                    .scaleEffect(lane.isRecommended ? 1.04 : 0.96)
                     .animation(.spring(response: 0.35, dampingFraction: 0.7), value: lane.isRecommended)
                 }
             }
         }
-        .padding(12)
+        .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 18)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.black.opacity(0.88), Color(red: 0.08, green: 0.12, blue: 0.22).opacity(0.92)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color(hex: "10141E").opacity(0.92))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: 20)
                 .stroke(
                     LinearGradient(
-                        colors: [Color.cyan.opacity(0.6), Color.blue.opacity(0.2)],
+                        colors: [Color(hex: "00F2FE").opacity(0.5), Color.white.opacity(0.1)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     lineWidth: 1.2
                 )
         )
-        .shadow(color: Color.black.opacity(0.4), radius: 12, x: 0, y: 6)
+        .shadow(color: Color.black.opacity(0.6), radius: 16, x: 0, y: 8)
     }
 }

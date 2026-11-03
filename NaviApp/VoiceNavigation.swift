@@ -56,10 +56,10 @@ final class VoiceNavigation: ObservableObject {
     }
 
     func announceOffRoute() {
-        speak("您已偏离规划路线，正在重新规划 3D 路线")
+        speak("您已偏离路线，正在立马规划最优路线")
     }
 
     func announceArrival() {
-        speak("已到达目的地附近，车道级导航结束")
+        speak("已到达目的地附近，导航结束")
     }
 }

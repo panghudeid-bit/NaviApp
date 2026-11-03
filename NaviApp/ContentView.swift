@@ -19,7 +19,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.activityType = .automotiveNavigation
-        manager.distanceFilter = 2.0 // 2 米更新一次，提供极为细腻的 3D 航向平滑
+        manager.distanceFilter = 1.5
         manager.pausesLocationUpdatesAutomatically = false
     }
 
@@ -92,8 +92,11 @@ struct ContentView: View {
     @StateObject private var navigationEngine = NavigationEngine()
     @StateObject private var voiceNavigation = VoiceNavigation()
 
-    // iOS 17+ 3D 沉浸式相机
     @State private var cameraPosition: MapCameraPosition = .automatic
+
+    // 路线偏好配置
+    @State private var selectedPreference: RoutePreference = .leastCongested
+    @State private var routeAssessments: [RouteAssessment] = []
 
     @State private var destinationText = ""
     @State private var searchResults: [MKMapItem] = []
@@ -119,7 +122,6 @@ struct ContentView: View {
     @State private var showError = false
     @State private var followUser = true
 
-    // 拟真 3D 脉冲动画开关
     @State private var radarPulse = false
 
     private var selectedRoute: MKRoute? {
@@ -130,64 +132,61 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .top) {
 
-            // 1. 3D 真实地形与建筑地图
+            // 1. 底层 3D 沉浸式地形与建筑物网格
             Map(position: $cameraPosition) {
 
-                // 自定义 3D 车道级拟真车模与雷达脉冲光标（替代默认蓝点）
+                // 自定义立体车模
                 if let loc = locationManager.location {
                     Annotation("当前位置", coordinate: loc.coordinate) {
                         car3DMarker(location: loc)
                     }
                 }
 
-                // 2. 立体车道级多层渲染（3D 管道阴影底座 + 渐变车道路面 + 核心发光引导带）
+                // 多层复合 3D 立体发光车道
                 ForEach(Array(displayRoutes.enumerated()), id: \.offset) { index, route in
                     let isCurrent = (index == selectedRouteIndex)
 
                     if isCurrent {
-                        // 底层：3D 立体路面沥青投影层
+                        // 3D 沥青暗色投影底槽
                         MapPolyline(route.polyline)
                             .stroke(
-                                Color.black.opacity(0.35),
-                                style: StrokeStyle(lineWidth: 16, lineCap: .round, lineJoin: .round)
+                                Color.black.opacity(0.5),
+                                style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
                             )
 
-                        // 中层：真实车道级深蓝高附着路面
+                        // 科技主干光带
                         MapPolyline(route.polyline)
                             .stroke(
                                 LinearGradient(
-                                    colors: [
-                                        Color(red: 0.05, green: 0.35, blue: 0.95),
-                                        Color(red: 0.00, green: 0.65, blue: 1.00)
-                                    ],
+                                    colors: [Color(hex: "0052D4"), Color(hex: "4364F7"), Color(hex: "6FB1FC")],
                                     startPoint: .leading,
                                     endPoint: .trailing
                                 ),
                                 style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
                             )
 
-                        // 顶层：车道核心高光发光流光带
+                        // 顶层高亮发光流光引导
                         MapPolyline(route.polyline)
                             .stroke(
-                                Color.cyan.opacity(0.9),
+                                Color(hex: "00F2FE"),
                                 style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round)
                             )
                     } else {
-                        // 备选路线
+                        // 备选路线（半透明暗色）
                         MapPolyline(route.polyline)
                             .stroke(
-                                Color.gray.opacity(0.5),
-                                style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round)
+                                Color.gray.opacity(0.4),
+                                style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
                             )
                     }
                 }
 
-                // 终点立标
                 if let end = endCoordinate {
                     Marker(
                         endName.isEmpty ? "目的地" : endName,
                         coordinate: end
                     )
+                    .tint(Color(hex: "FF416C"))
                 }
             }
             .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .including([.parking, .gasStation])))
@@ -198,10 +197,10 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
 
-            // 浮动面板层
+            // 2. 上层 UI 控制器
             VStack(spacing: 12) {
                 if navigationEngine.isNavigating {
-                    // 导航中：顶部悬浮 3D 车道级指示栏
+                    // 导航中：顶部 3D 车道级指示栏
                     LaneGuidanceView(
                         lanes: navigationEngine.currentLanes,
                         nextTurnInstruction: navigationEngine.nextStepInstruction,
@@ -209,18 +208,25 @@ struct ContentView: View {
                     )
                     .transition(.move(edge: .top).combined(with: .opacity))
                 } else {
-                    searchPanel
+                    // 未导航：现代搜索栏与偏好筛选胶囊
+                    searchAndPreferencePanel
                 }
 
                 Spacer()
 
-                if let route = selectedRoute {
-                    routePanel(route)
+                if navigationEngine.isNavigating {
+                    // 导航中：现代化仪表卡片
+                    navigationDashboardView
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if !displayRoutes.isEmpty {
+                    // 路线规划完成：多路线对比横滑卡片
+                    routeComparisonPanel
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.top, navigationEngine.isNavigating ? 50 : 58)
-            .padding(.bottom, 12)
+            .padding(.top, navigationEngine.isNavigating ? 48 : 56)
+            .padding(.bottom, 14)
 
             // 搜索结果
             if showResults {
@@ -245,18 +251,18 @@ struct ContentView: View {
                 voiceNavigation.speak(instruction)
             }
 
-            // 车道级变道播报
             navigationEngine.onLaneAdvise = { laneText in
                 voiceNavigation.speak(laneText)
             }
 
+            // 偏航重算回调：秒级同步刷新路线与视图
             navigationEngine.onRerouted = { newRoute in
                 displayRoutes = [newRoute]
                 selectedRouteIndex = 0
+                voiceNavigation.speak("已偏离路线，已为您按\(selectedPreference.rawValue)重算最优路线")
             }
 
-            // 启动雷达光波动画
-            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) {
                 radarPulse = true
             }
         }
@@ -267,9 +273,9 @@ struct ContentView: View {
                 startCoordinate = newLocation.coordinate
             }
 
-            navigationEngine.updateLocation(newLocation)
+            // 传递当前位置以及用户所选偏好，保证偏航重算遵循偏好
+            navigationEngine.updateLocation(newLocation, preference: selectedPreference)
 
-            // 导航视角自适应插值更新：实时 3D 俯仰与视距控制
             if navigationEngine.isNavigating {
                 update3DNavigationCamera(with: newLocation)
             } else if followUser && displayRoutes.isEmpty {
@@ -293,42 +299,42 @@ struct ContentView: View {
         let headingDegrees = (location.course >= 0 ? location.course : (locationManager.heading?.trueHeading ?? 0))
 
         return ZStack {
-            // 扩散雷达波
+            // 脉冲雷达波
             Circle()
-                .stroke(Color.cyan.opacity(radarPulse ? 0.0 : 0.6), lineWidth: 2)
-                .frame(width: radarPulse ? 70 : 30, height: radarPulse ? 70 : 30)
+                .stroke(Color(hex: "00F2FE").opacity(radarPulse ? 0.0 : 0.7), lineWidth: 2)
+                .frame(width: radarPulse ? 72 : 32, height: radarPulse ? 72 : 32)
 
-            // 车辆光晕底座
+            // 光晕底座
             Circle()
                 .fill(
                     RadialGradient(
-                        colors: [Color.blue.opacity(0.5), Color.clear],
+                        colors: [Color(hex: "0072FF").opacity(0.55), Color.clear],
                         center: .center,
-                        startRadius: 5,
-                        endRadius: 24
+                        startRadius: 4,
+                        endRadius: 26
                     )
                 )
-                .frame(width: 48, height: 48)
+                .frame(width: 52, height: 52)
 
-            // 3D 拟真车模外观（立体渐变箭头、车头大灯光束）
+            // 3D 拟真车模
             ZStack {
-                // 车灯远光照射效果
+                // 车灯高亮照地流光
                 ConeLightShape()
                     .fill(
                         LinearGradient(
-                            colors: [Color.yellow.opacity(0.4), Color.clear],
+                            colors: [Color.yellow.opacity(0.45), Color.clear],
                             startPoint: .bottom,
                             endPoint: .top
                         )
                     )
-                    .frame(width: 38, height: 44)
-                    .offset(y: -22)
+                    .frame(width: 36, height: 46)
+                    .offset(y: -23)
 
-                // 立体小车模底壳
+                // 质感金属车体
                 RoundedRectangle(cornerRadius: 6)
                     .fill(
                         LinearGradient(
-                            colors: [Color.white, Color(white: 0.88)],
+                            colors: [Color(hex: "FFFFFF"), Color(hex: "D8E2EC")],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -336,22 +342,22 @@ struct ContentView: View {
                     .frame(width: 18, height: 32)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.blue, lineWidth: 1.5)
+                            .stroke(Color(hex: "0052D4"), lineWidth: 1.5)
                     )
-                    .shadow(color: Color.black.opacity(0.35), radius: 4, x: 0, y: 3)
+                    .shadow(color: Color.black.opacity(0.4), radius: 5, x: 0, y: 3)
 
-                // 车窗与车顶涂装
+                // 车窗与天窗
                 VStack(spacing: 2) {
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.cyan.opacity(0.85))
+                        .fill(Color(hex: "00C6FF"))
                         .frame(width: 12, height: 7)
 
                     RoundedRectangle(cornerRadius: 1)
-                        .fill(Color.gray.opacity(0.3))
+                        .fill(Color(hex: "2C3E50").opacity(0.4))
                         .frame(width: 10, height: 8)
 
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.cyan.opacity(0.85))
+                        .fill(Color(hex: "00C6FF"))
                         .frame(width: 12, height: 4)
                 }
             }
@@ -363,27 +369,23 @@ struct ContentView: View {
 
     private func update3DNavigationCamera(with location: CLLocation) {
         let currentHeading = (location.course >= 0 ? location.course : (locationManager.heading?.trueHeading ?? 0))
-        let speed = max(0, location.speed) // 单位：米/秒
+        let speed = max(0, location.speed)
 
-        // 智能视距控制：低速（路口/转弯）拉近并加大仰角；高速拉远开阔视野
         let distance: Double
         let pitch: Double
 
         if speed < 5.0 {
-            // 时速 < 18km/h（路口待转/起步）：超近景 3D 沉浸式俯仰
             distance = 150
             pitch = 65
         } else if speed < 16.0 {
-            // 时速 18~60km/h（市区道路）
             distance = 220
             pitch = 60
         } else {
-            // 高速行驶
             distance = 320
             pitch = 52
         }
 
-        withAnimation(.easeInOut(duration: 0.5)) {
+        withAnimation(.easeInOut(duration: 0.4)) {
             cameraPosition = .camera(
                 MapCamera(
                     centerCoordinate: location.coordinate,
@@ -395,85 +397,394 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 搜索栏
+    // MARK: - 搜索栏与路线偏好胶囊组
 
-    private var searchPanel: some View {
+    private var searchAndPreferencePanel: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                Circle().fill(.green).frame(width: 8, height: 8)
-                TextField("起点（默认我的位置）", text: $startText)
-                    .textFieldStyle(.plain)
-            }
+            VStack(spacing: 10) {
+                // 起点
+                HStack(spacing: 10) {
+                    Circle().fill(Color(hex: "00F2FE")).frame(width: 8, height: 8)
+                    TextField("起点（默认我的位置）", text: $startText)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(.white)
+                }
 
-            HStack(spacing: 10) {
-                Circle().fill(.orange).frame(width: 8, height: 8)
-                TextField("途经点（可选）", text: $viaText)
-                    .textFieldStyle(.plain)
-            }
+                // 终点 + 搜索按钮
+                HStack(spacing: 10) {
+                    Circle().fill(Color(hex: "FF416C")).frame(width: 8, height: 8)
+                    TextField("输入目的地", text: $destinationText)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(.white)
+                        .submitLabel(.search)
+                        .onSubmit {
+                            Task { await searchPlaces() }
+                        }
 
-            HStack(spacing: 10) {
-                Circle().fill(.red).frame(width: 8, height: 8)
-                TextField("输入目的地", text: $destinationText)
-                    .textFieldStyle(.plain)
-                    .submitLabel(.search)
-                    .onSubmit {
-                        Task { await searchPlaces() }
+                    if isSearching {
+                        ProgressView().tint(Color(hex: "00F2FE"))
                     }
 
-                if isSearching {
-                    ProgressView()
+                    Button {
+                        Task { await searchPlaces() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "magnifyingglass")
+                            Text("搜索")
+                        }
+                        .font(.system(size: 14, weight: .bold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            LinearGradient(colors: [Color(hex: "00C6FF"), Color(hex: "0072FF")], startPoint: .leading, endPoint: .trailing)
+                        )
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                    }
+                    .disabled(destinationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+
+            Divider()
+                .background(Color.white.opacity(0.12))
+
+            // 路线偏好筛选胶囊组
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("路线偏好")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    if isCalculating {
+                        HStack(spacing: 4) {
+                            ProgressView().scaleEffect(0.7).tint(Color(hex: "00F2FE"))
+                            Text("正在计算最优路径...")
+                                .font(.caption2)
+                                .foregroundStyle(Color(hex: "00F2FE"))
+                        }
+                    }
                 }
 
-                Button("搜索") {
-                    Task { await searchPlaces() }
+                HStack(spacing: 8) {
+                    ForEach(RoutePreference.allCases) { pref in
+                        let isSelected = (selectedPreference == pref)
+
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                selectedPreference = pref
+                            }
+                            if endCoordinate != nil {
+                                Task { await calculateRoute() }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: pref.iconName)
+                                    .font(.system(size: 11, weight: .bold))
+                                Text(pref.rawValue)
+                                    .font(.system(size: 12, weight: isSelected ? .bold : .medium))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(
+                                isSelected
+                                ? LinearGradient(colors: [Color(hex: "00C6FF"), Color(hex: "0072FF")], startPoint: .leading, endPoint: .trailing)
+                                : LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.05)], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.7))
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule().stroke(
+                                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
+                                    lineWidth: isSelected ? 1.5 : 0.5
+                                )
+                            )
+                            .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .fontWeight(.semibold)
-                .disabled(destinationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
             if !displayRoutes.isEmpty {
-                Divider()
                 HStack {
-                    Label("3D 路线已规划", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color(hex: "00F2FE"))
+                        Text("已推荐 \(selectedPreference.rawValue) 最优路线")
+                            .font(.caption)
+                            .foregroundStyle(Color(hex: "00F2FE"))
+                    }
+
                     Spacer()
-                    Button("清除路线") {
+
+                    Button("清除") {
                         clearRoute()
                     }
-                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .foregroundStyle(.red.opacity(0.9))
                 }
-                .font(.subheadline)
             }
         }
         .padding(14)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .shadow(radius: 4)
+        .background(
+            RoundedRectangle(cornerRadius: 22)
+                .fill(Color(hex: "10141E").opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.25), Color.white.opacity(0.05)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: Color.black.opacity(0.5), radius: 16, x: 0, y: 8)
     }
 
-    // MARK: 搜索结果列表
+    // MARK: - 路线规划结果对比卡片组（美化）
+
+    private var routeComparisonPanel: some View {
+        VStack(spacing: 12) {
+            // 横向路线卡片滑动组
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Array(routeAssessments.enumerated()), id: \.offset) { index, item in
+                        let isSelected = (index == selectedRouteIndex)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(item.route.expectedTravelTime.formattedDuration)
+                                    .font(.system(size: 22, weight: .heavy))
+                                    .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.8))
+
+                                Spacer()
+
+                                if item.isRecommended {
+                                    Text("最优选")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color(hex: "00F2FE"))
+                                        .foregroundStyle(Color.black)
+                                        .clipShape(Capsule())
+                                }
+                            }
+
+                            Text(String(format: "全程 %.1f 公里", item.route.distance / 1000))
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.6))
+
+                            // 路线优势标签
+                            HStack(spacing: 5) {
+                                ForEach(item.tags, id: \.self) { tag in
+                                    Text(tag)
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.white.opacity(0.12))
+                                        .foregroundStyle(Color(hex: "00F2FE"))
+                                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                                }
+                            }
+                        }
+                        .frame(width: 170)
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(
+                                    isSelected
+                                    ? Color(hex: "0052D4").opacity(0.45)
+                                    : Color(hex: "10141E").opacity(0.85)
+                                )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(
+                                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
+                                    lineWidth: isSelected ? 2 : 0.8
+                                )
+                        )
+                        .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 8)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                selectedRouteIndex = index
+                                fitRoute()
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+
+            // 底部操作按钮栏
+            HStack(spacing: 10) {
+                Button {
+                    showRouteDetails = true
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.title3)
+                        .padding()
+                        .background(Color.white.opacity(0.1))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+
+                Button {
+                    swapEndpoints()
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.title3)
+                        .padding()
+                        .background(Color.white.opacity(0.1))
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+
+                // 开始导航主按钮
+                Button {
+                    guard let route = selectedRoute, let destination = selectedDestination else { return }
+
+                    navigationEngine.start(route: route, destination: destination, preference: selectedPreference)
+                    voiceNavigation.speak("开始3D导航，已为您选择\(selectedPreference.rawValue)路线，全程约\(route.expectedTravelTime.formattedDuration)，请注意行驶安全")
+
+                    if let loc = locationManager.location {
+                        update3DNavigationCamera(with: loc)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "location.north.fill")
+                        Text("进入 3D 偏好导航")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(
+                        LinearGradient(colors: [Color(hex: "00C6FF"), Color(hex: "0072FF")], startPoint: .leading, endPoint: .trailing)
+                    )
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: Color(hex: "0072FF").opacity(0.5), radius: 10, x: 0, y: 4)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color(hex: "10141E").opacity(0.94))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.6), radius: 18, x: 0, y: 8)
+    }
+
+    // MARK: - 导航中仪表盘（沉浸式科技仪表）
+
+    private var navigationDashboardView: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .center) {
+                // 剩余里程与时间
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .lastTextBaseline, spacing: 6) {
+                        Text(navigationEngine.remainingTime.formattedDuration)
+                            .font(.system(size: 26, weight: .heavy))
+                            .foregroundStyle(.white)
+
+                        Text(String(format: "%.1f km", navigationEngine.remainingDistance / 1000))
+                            .font(.subheadline)
+                            .fontWeight(.bold)
+                            .foregroundStyle(Color(hex: "00F2FE"))
+                    }
+
+                    HStack(spacing: 6) {
+                        Circle().fill(Color.green).frame(width: 6, height: 6)
+                        Text(selectedPreference.rawValue)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.7))
+                        Text("·")
+                            .foregroundStyle(.white.opacity(0.4))
+                        Text(navigationEngine.statusMessage)
+                            .font(.caption2)
+                            .foregroundStyle(navigationEngine.isOffRoute ? .orange : .white.opacity(0.7))
+                    }
+                }
+
+                Spacer()
+
+                // 静音开关
+                Button {
+                    if voiceNavigation.isMuted {
+                        voiceNavigation.unmute()
+                    } else {
+                        voiceNavigation.mute()
+                    }
+                } label: {
+                    Image(systemName: voiceNavigation.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.title3)
+                        .padding(12)
+                        .background(Color.white.opacity(0.1))
+                        .foregroundStyle(.white)
+                        .clipShape(Circle())
+                }
+
+                // 退出导航按钮
+                Button {
+                    navigationEngine.stop()
+                    withAnimation {
+                        cameraPosition = .automatic
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.headline)
+                        .padding(12)
+                        .background(Color.red.opacity(0.9))
+                        .foregroundStyle(.white)
+                        .clipShape(Circle())
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 22)
+                .fill(Color(hex: "10141E").opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.6), radius: 16, x: 0, y: 8)
+    }
+
+    // MARK: - 搜索结果列表
 
     private var resultsOverlay: some View {
         VStack {
-            Spacer().frame(height: 125)
+            Spacer().frame(height: 140)
 
             VStack(spacing: 0) {
                 HStack {
-                    Text("搜索结果").font(.headline)
+                    Text("目的地搜索结果").font(.headline).foregroundStyle(.white)
                     Spacer()
                     Button("关闭") {
                         showResults = false
                     }
+                    .foregroundStyle(Color(hex: "00F2FE"))
                 }
                 .padding()
 
-                Divider()
+                Divider().background(Color.white.opacity(0.12))
 
                 if searchResults.isEmpty {
                     ContentUnavailableView(
-                        "没有搜索结果",
-                        systemImage: "magnifyingglass",
-                        description: Text("请尝试输入更具体的地点名称")
+                        "未找到相关地点",
+                        systemImage: "mappin.slash",
+                        description: Text("请尝试输入更具体的道路或商户名称")
                     )
                     .frame(height: 180)
                 } else {
@@ -486,179 +797,56 @@ struct ContentView: View {
                                     }
                                 } label: {
                                     HStack(alignment: .top, spacing: 12) {
-                                        Image(systemName: "mappin.and.ellipse")
-                                            .foregroundStyle(.blue)
-                                            .font(.title3)
+                                        Image(systemName: "mappin.circle.fill")
+                                            .foregroundStyle(Color(hex: "00F2FE"))
+                                            .font(.title2)
 
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(item.name ?? "未命名地点")
-                                                .fontWeight(.medium)
-                                                .foregroundStyle(.primary)
+                                                .fontWeight(.bold)
+                                                .foregroundStyle(.white)
 
                                             Text(item.placemark.title ?? "")
                                                 .font(.caption)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(.white.opacity(0.6))
                                                 .lineLimit(2)
                                         }
 
                                         Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .foregroundStyle(.tertiary)
+                                        Image(systemName: "arrow.up.right.circle")
+                                            .foregroundStyle(.white.opacity(0.4))
                                     }
                                     .padding()
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
 
-                                Divider()
+                                Divider().background(Color.white.opacity(0.08))
                             }
                         }
                     }
-                    .frame(maxHeight: 350)
+                    .frame(maxHeight: 340)
                 }
             }
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            .shadow(radius: 5)
+            .background(Color(hex: "10141E").opacity(0.95))
+            .clipShape(RoundedRectangle(cornerRadius: 22))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22).stroke(Color.white.opacity(0.15), lineWidth: 1)
+            )
+            .shadow(radius: 16)
 
             Spacer()
         }
         .padding(.horizontal, 14)
     }
 
-    // MARK: 路线与导航控制面板
-
-    private func routePanel(_ route: MKRoute) -> some View {
-        VStack(spacing: 14) {
-
-            // 头部：总里程与时间信息
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(
-                        navigationEngine.isNavigating
-                            ? navigationEngine.remainingTime.formattedDuration
-                            : route.expectedTravelTime.formattedDuration
-                    )
-                    .font(.system(size: 28, weight: .bold))
-
-                    Text(
-                        navigationEngine.isNavigating
-                            ? String(format: "剩余 %.1f 公里 · 3D 车道导航中", navigationEngine.remainingDistance / 1000)
-                            : String(format: "全程 %.1f 公里", route.distance / 1000)
-                    )
-                    .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "car.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(.blue)
-            }
-
-            // 按钮操作区
-            if navigationEngine.isNavigating {
-                HStack(spacing: 12) {
-                    Button {
-                        navigationEngine.stop()
-                        withAnimation {
-                            cameraPosition = .automatic
-                        }
-                    } label: {
-                        Label("结束导航", systemImage: "xmark.circle.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-
-                    Button {
-                        if voiceNavigation.isMuted {
-                            voiceNavigation.unmute()
-                        } else {
-                            voiceNavigation.mute()
-                        }
-                    } label: {
-                        Image(systemName: voiceNavigation.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.title3)
-                            .padding()
-                            .background(Color.gray.opacity(0.15))
-                            .foregroundStyle(.primary)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                }
-            } else {
-                HStack(spacing: 10) {
-                    Button {
-                        showRouteDetails = true
-                    } label: {
-                        Label("路线详情", systemImage: "list.bullet")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue.opacity(0.12))
-                            .foregroundStyle(.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-
-                    Button {
-                        fitRoute()
-                    } label: {
-                        Label("全览路线", systemImage: "arrow.up.left.and.arrow.down.right")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                }
-
-                Button {
-                    swapEndpoints()
-                } label: {
-                    Label("交换起点和终点", systemImage: "arrow.up.arrow.down")
-                        .font(.subheadline)
-                }
-
-                // 开始导航主按钮
-                Button {
-                    guard let route = selectedRoute, let destination = selectedDestination else { return }
-
-                    navigationEngine.start(route: route, destination: destination)
-                    voiceNavigation.speak("开始车道级3D导航，全程约\(route.expectedTravelTime.formattedDuration)，请沿当前车道行驶")
-
-                    if let loc = locationManager.location {
-                        update3DNavigationCamera(with: loc)
-                    }
-                } label: {
-                    HStack {
-                        Image(systemName: "location.north.fill")
-                        Text("进入车道级 3D 导航")
-                    }
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(
-                        LinearGradient(colors: [Color.blue, Color.cyan], startPoint: .leading, endPoint: .trailing)
-                    )
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .shadow(color: Color.blue.opacity(0.35), radius: 8, x: 0, y: 4)
-                }
-            }
-        }
-        .padding(16)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 22))
-        .shadow(radius: 5)
-    }
-
-    // MARK: 路线详情
+    // MARK: - 路线详情 Sheet
 
     private var routeDetailsSheet: some View {
         NavigationStack {
             List {
-                Section("行程信息") {
+                Section("行程概要") {
+                    LabeledContent("当前偏好", value: selectedPreference.rawValue)
                     LabeledContent("起点", value: startName)
                     LabeledContent("终点", value: endName)
 
@@ -669,7 +857,7 @@ struct ContentView: View {
                 }
 
                 if let route = selectedRoute {
-                    Section("路线指示步骤") {
+                    Section("详细转向指引") {
                         ForEach(
                             Array(route.steps.filter { !$0.instructions.isEmpty }.enumerated()),
                             id: \.offset
@@ -677,13 +865,14 @@ struct ContentView: View {
                             HStack(alignment: .top, spacing: 12) {
                                 Text("\(index + 1)")
                                     .fontWeight(.bold)
-                                    .foregroundStyle(.blue)
+                                    .foregroundStyle(Color(hex: "00F2FE"))
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(step.instructions)
+                                        .foregroundStyle(.white)
                                     Text(String(format: "%.0f 米", step.distance))
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(.white.opacity(0.6))
                                 }
                             }
                             .padding(.vertical, 4)
@@ -691,19 +880,20 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("路线详情")
+            .navigationTitle("路线规划详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
                         showRouteDetails = false
                     }
+                    .foregroundStyle(Color(hex: "00F2FE"))
                 }
             }
         }
     }
 
-    // MARK: 搜索地点
+    // MARK: - 搜索地点
 
     @MainActor
     private func searchPlaces() async {
@@ -739,7 +929,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 选择目的地
+    // MARK: - 选择目的地并立即规划
 
     @MainActor
     private func selectDestination(_ item: MKMapItem) async {
@@ -751,7 +941,7 @@ struct ContentView: View {
         await calculateRoute()
     }
 
-    // MARK: 计算路线
+    // MARK: - 多备选路线偏好计算
 
     @MainActor
     private func calculateRoute() async {
@@ -768,17 +958,25 @@ struct ContentView: View {
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
         request.transportType = .automobile
+        request.requestsAlternateRoutes = true // 请求所有备选路线以便偏好筛选
 
         do {
             let response = try await MKDirections(request: request).calculate()
 
-            guard response.routes.first != nil else {
+            guard !response.routes.isEmpty else {
                 errorMessage = "没有可用的驾车路线"
                 showError = true
                 return
             }
 
-            displayRoutes = response.routes
+            // 使用偏好评估引擎分析排序
+            let assessments = RoutePreferenceEngine.evaluateRoutes(
+                response.routes,
+                preference: selectedPreference
+            )
+
+            routeAssessments = assessments
+            displayRoutes = assessments.map { $0.route }
             selectedRouteIndex = 0
             followUser = false
 
@@ -789,11 +987,8 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 交换起点和终点
-
     private func swapEndpoints() {
         guard let start = startCoordinate, let end = endCoordinate else { return }
-
         startCoordinate = end
         endCoordinate = start
 
@@ -805,8 +1000,6 @@ struct ContentView: View {
             await calculateRoute()
         }
     }
-
-    // MARK: 地图操作
 
     private func moveCamera(to coordinate: CLLocationCoordinate2D) {
         withAnimation {
@@ -833,6 +1026,7 @@ struct ContentView: View {
         }
 
         displayRoutes = []
+        routeAssessments = []
         selectedRouteIndex = 0
         selectedDestination = nil
         endCoordinate = nil
@@ -844,6 +1038,22 @@ struct ContentView: View {
         if let location = locationManager.location {
             moveCamera(to: location.coordinate)
         }
+    }
+}
+
+// MARK: - 颜色 Hex 便捷扩展
+
+extension Color {
+    init(hex: String) {
+        let scanner = Scanner(string: hex)
+        _ = scanner.scanString("#")
+        var rgb: UInt64 = 0
+        scanner.scanHexInt64(&rgb)
+
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+        self.init(red: r, green: g, blue: b)
     }
 }
 
