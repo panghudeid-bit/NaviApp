@@ -79,6 +79,12 @@ struct ContentView: View {
 
     @State private var selectedRouteIndex: Int = 0
 
+    @State private var startText = ""
+
+    @State private var viaText = ""
+
+    @State private var destinationText = ""
+
     @State private var startCoordinate: CLLocationCoordinate2D?
 
     @State private var endCoordinate: CLLocationCoordinate2D?
@@ -206,22 +212,51 @@ struct ContentView: View {
 
     private var searchPanel: some View {
 
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
 
+            // 起点
             HStack(spacing: 10) {
 
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                Circle()
+                    .fill(.green)
+                    .frame(width: 8, height: 8)
+
+                TextField(
+                    "起点（默认我的位置）",
+                    text: $startText
+                )
+                .textFieldStyle(.plain)
+            }
+
+            // 途经点
+            HStack(spacing: 10) {
+
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 8, height: 8)
+
+                TextField(
+                    "途经点（可选）",
+                    text: $viaText
+                )
+                .textFieldStyle(.plain)
+            }
+
+            // 终点 + 搜索按钮
+            HStack(spacing: 10) {
+
+                Circle()
+                    .fill(.red)
+                    .frame(width: 8, height: 8)
 
                 TextField(
                     "输入目的地",
                     text: $destinationText
                 )
+                .textFieldStyle(.plain)
                 .submitLabel(.search)
                 .onSubmit {
-                    Task {
-                        await searchPlaces()
-                    }
+                    Task { await searchPlaces() }
                 }
 
                 if isSearching {
@@ -229,9 +264,7 @@ struct ContentView: View {
                 }
 
                 Button("搜索") {
-                    Task {
-                        await searchPlaces()
-                    }
+                    Task { await searchPlaces() }
                 }
                 .fontWeight(.semibold)
                 .disabled(
