@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>导航</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.5</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>MinimumOSVersion</key>
+    <string>17.0</string>
+    
+    <!-- 定位权限文案 -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>需要获取您的当前位置，用于在地图上定位、搜索附近目的地并规划驾车路线。</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>需要获取持续定位权限，以便在您开始导航后，锁屏或切换到后台时依然能够持续提供实时语音播报与偏航重算。</string>
+    <key>NSLocationAlwaysUsageDescription</key>
+    <string>需要获取后台定位权限以保证在手机锁屏状态下车载语音导航不中断。</string>
+
+    <!-- 🌟 [P1] 精准定位临时申请 Purpose 声明 -->
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>NavPrecisionAccuracy</key>
+        <string>需要高精度 GPS 定位以在复杂路口提供准确的转向时机与距离指示。</string>
+    </dict>
+
+    <!-- 后台保活能力 -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>location</string>
+        <string>audio</string>
+    </array>
+
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+    </array>
+</dict>
+</plist>

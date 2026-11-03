@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Xcode（由 XcodeGen 在 CI 中生成，不入库）
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+build/
+DerivedData/
+
+# 工具产物
+tools/AppIcon-1024.png
