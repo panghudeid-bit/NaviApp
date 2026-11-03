@@ -66,6 +66,12 @@ struct ContentView: View {
     @StateObject private var locationManager =
         LocationManager()
 
+    @StateObject private var navigationEngine =
+        NavigationEngine()
+
+    @StateObject private var navigationEngine =
+        NavigationEngine()
+
     @State private var cameraPosition:
         MapCameraPosition = .automatic
 
@@ -186,7 +192,19 @@ struct ContentView: View {
                 startCoordinate = newLocation.coordinate
             }
 
-            if followUser && displayRoutes.isEmpty {
+            navigationEngine.updateLocation(newLocation)
+
+            if navigationEngine.isNavigating {
+                withAnimation {
+                    cameraPosition = .region(
+                        MKCoordinateRegion(
+                            center: newLocation.coordinate,
+                            latitudinalMeters: 500,
+                            longitudinalMeters: 500
+                        )
+                    )
+                }
+            } else if followUser && displayRoutes.isEmpty {
                 moveCamera(
                     to: newLocation.coordinate
                 )
@@ -516,6 +534,155 @@ struct ContentView: View {
                     systemImage: "arrow.up.arrow.down"
                 )
                 .font(.subheadline)
+            }
+
+            // 导航状态面板
+            if navigationEngine.isNavigating || navigationEngine.hasArrived {
+
+                VStack(alignment: .leading, spacing: 8) {
+
+                    Text(navigationEngine.statusMessage)
+                        .font(.headline)
+
+                    Text(
+                        "剩余距离：\(navigationEngine.remainingDistance / 1000, specifier: "%.1f") 公里"
+                    )
+
+                    Text(
+                        "预计剩余：\(navigationEngine.remainingTime.formattedDuration)"
+                    )
+
+                    if navigationEngine.isOffRoute {
+                        Text("正在重新规划路线")
+                            .foregroundStyle(.orange)
+                    }
+
+                    if navigationEngine.hasArrived {
+                        Text("已到达目的地")
+                            .foregroundStyle(.green)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.regularMaterial)
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 16)
+                )
+            }
+
+            // 开始/结束导航按钮
+            if navigationEngine.isNavigating {
+
+                Button {
+                    navigationEngine.stop()
+                } label: {
+
+                    Label(
+                        "结束导航",
+                        systemImage: "xmark.circle"
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(.red)
+                    .foregroundStyle(.white)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: 12)
+                    )
+                }
+
+            } else {
+
+                Button {
+                    guard let destination = selectedDestination else {
+                        return
+                    }
+
+                    navigationEngine.start(
+                        route: route,
+                        destination: destination
+                    )
+
+                } label: {
+
+                    Label(
+                        "开始导航",
+                        systemImage: "location.north.fill"
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: 12)
+                    )
+                }
+            }
+
+            if navigationEngine.isNavigating {
+
+                // 导航中：显示剩余信息 + 结束导航
+                VStack(spacing: 8) {
+
+                    HStack {
+                        Text(navigationEngine.statusMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(String(format: "剩余 %.1f 公里", navigationEngine.remainingDistance / 1000))
+                                .font(.headline)
+                            Text(navigationEngine.remainingTime.formattedDuration)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+
+                    Button {
+                        navigationEngine.stop()
+                    } label: {
+                        Label(
+                            "结束导航",
+                            systemImage: "xmark.circle"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(.red)
+                        .foregroundStyle(.white)
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: 12)
+                        )
+                    }
+                }
+
+            } else {
+
+                // 未导航：显示开始导航按钮
+                Button {
+                    guard let route = selectedRoute,
+                          let destination = selectedDestination else {
+                        return
+                    }
+                    navigationEngine.start(
+                        route: route,
+                        destination: destination
+                    )
+                } label: {
+                    Label(
+                        "开始导航",
+                        systemImage: "location.north.fill"
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: 12)
+                    )
+                }
             }
         }
         .padding(16)
