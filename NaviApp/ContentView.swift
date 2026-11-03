@@ -533,63 +533,10 @@ struct ContentView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(Array(routeAssessments.enumerated()), id: \.offset) { index, item in
-                        let isSelected = (index == selectedRouteIndex)
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(item.route.expectedTravelTime.formattedDuration)
-                                    .font(.system(size: 22, weight: .heavy))
-                                    .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.8))
-
-                                Spacer()
-
-                                if item.isRecommended {
-                                    Text("最优选")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(Color(hex: "00F2FE"))
-                                        .foregroundStyle(Color.black)
-                                        .clipShape(Capsule())
-                                }
-                            }
-
-                            Text(String(format: "全程 %.1f 公里", item.route.distance / 1000))
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.6))
-
-                            HStack(spacing: 5) {
-                                ForEach(item.tags, id: \.self) { tag in
-                                    Text(tag)
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.white.opacity(0.12))
-                                        .foregroundStyle(Color(hex: "00F2FE"))
-                                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                                }
-                            }
-                        }
-                        .frame(width: 170)
-                        .padding(12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(
-                                    isSelected
-                                    ? Color(hex: "0052D4").opacity(0.45)
-                                    : Color(hex: "10141E").opacity(0.85)
-                                )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(
-                                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
-                                    lineWidth: isSelected ? 2 : 0.8
-                                )
-                        )
-                        .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 8)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                        RouteCardView(
+                            assessment: item,
+                            isSelected: (index == selectedRouteIndex)
+                        ) {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                 selectedRouteIndex = index
                                 fitRoute()
@@ -1063,6 +1010,78 @@ extension TimeInterval {
             return "\(hours)小时\(remainingMinutes)分钟"
         } else {
             return "\(max(1, remainingMinutes))分钟"
+        }
+    }
+}
+
+// MARK: - 路线对比卡片（拆分以降低编译器类型检查压力）
+
+struct RouteCardView: View {
+    let assessment: RouteAssessment
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(assessment.route.expectedTravelTime.formattedDuration)
+                    .font(.system(size: 22, weight: .heavy))
+                    .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.8))
+
+                Spacer()
+
+                if assessment.isRecommended {
+                    Text("最优选")
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color(hex: "00F2FE"))
+                        .foregroundStyle(Color.black)
+                        .clipShape(Capsule())
+                }
+            }
+
+            Text(String(format: "全程 %.1f 公里", assessment.route.distance / 1000))
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+
+            tagsRow
+        }
+        .frame(width: 170)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(
+                    isSelected
+                    ? Color(hex: "0052D4").opacity(0.45)
+                    : Color(hex: "10141E").opacity(0.85)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(
+                    isSelected ? Color(hex: "00F2FE") : Color.white.opacity(0.1),
+                    lineWidth: isSelected ? 2 : 0.8
+                )
+        )
+        .shadow(color: isSelected ? Color(hex: "0072FF").opacity(0.4) : Color.clear, radius: 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap()
+        }
+    }
+
+    private var tagsRow: some View {
+        HStack(spacing: 5) {
+            ForEach(assessment.tags, id: \.self) { tag in
+                Text(tag)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.white.opacity(0.12))
+                    .foregroundStyle(Color(hex: "00F2FE"))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
         }
     }
 }
