@@ -69,6 +69,9 @@ struct ContentView: View {
     @StateObject private var navigationEngine =
         NavigationEngine()
 
+    @StateObject private var voiceNavigation =
+        VoiceNavigation()
+
     @State private var cameraPosition:
         MapCameraPosition = .automatic
 
@@ -663,9 +666,23 @@ struct ContentView: View {
                           let destination = selectedDestination else {
                         return
                     }
+
+                    // 绑定语音回调
+                    navigationEngine.onOffRoute = {
+                        voiceNavigation.announceOffRoute()
+                    }
+
+                    navigationEngine.onArrival = {
+                        voiceNavigation.announceArrival()
+                    }
+
                     navigationEngine.start(
                         route: route,
                         destination: destination
+                    )
+
+                    voiceNavigation.speak(
+                        "导航开始，请按照规划路线行驶"
                     )
                 } label: {
                     Label(
@@ -679,6 +696,21 @@ struct ContentView: View {
                     .clipShape(
                         RoundedRectangle(cornerRadius: 12)
                     )
+                }
+
+                // 静音/恢复按钮
+                Button {
+                    if voiceNavigation.isMuted {
+                        voiceNavigation.unmute()
+                    } else {
+                        voiceNavigation.mute()
+                    }
+                } label: {
+                    Label(
+                        voiceNavigation.isMuted ? "取消静音" : "静音",
+                        systemImage: voiceNavigation.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
+                    )
+                    .font(.subheadline)
                 }
             }
         }

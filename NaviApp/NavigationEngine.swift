@@ -20,6 +20,10 @@ final class NavigationEngine: ObservableObject {
     private var destination: MKMapItem?
     private var lastRerouteTime = Date.distantPast
 
+    // 语音播报回调
+    var onOffRoute: (() -> Void)?
+    var onArrival: (() -> Void)?
+
     // 开始导航
     func start(
         route: MKRoute,
@@ -72,6 +76,10 @@ final class NavigationEngine: ObservableObject {
 
         if distanceToDestination < 35 {
 
+            if !hasArrived {
+                onArrival?()
+            }
+
             hasArrived = true
             isNavigating = false
 
@@ -89,6 +97,10 @@ final class NavigationEngine: ObservableObject {
 
         // 超过 60 米视为偏离路线
         if distanceToRoute > 60 {
+
+            if !isOffRoute {
+                onOffRoute?()
+            }
 
             isOffRoute = true
 
