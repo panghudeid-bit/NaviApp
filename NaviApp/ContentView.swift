@@ -69,9 +69,6 @@ struct ContentView: View {
     @StateObject private var navigationEngine =
         NavigationEngine()
 
-    @StateObject private var navigationEngine =
-        NavigationEngine()
-
     @State private var cameraPosition:
         MapCameraPosition = .automatic
 
